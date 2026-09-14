@@ -1,0 +1,12 @@
+input_path: data/raw/lichess_db_standard_rated_2013-01.pgn.zst
+max_games: 20
+strict: false
+
+fixture_output_pgn: data/fixtures/lichess_2013_01_first20.pgn
+fixture_output_zst: data/fixtures/lichess_2013_01_first20.pgn.zst
+fixture_manifest_path: data/manifests/fixture_2013_01_first20.json
+
+schema_version: 1.1.0
+position_normalization_version: fen4_legal_ep_v1
+board_encoding_version: board18_abs_v1
+action_encoding_version: action8x8x73_v1

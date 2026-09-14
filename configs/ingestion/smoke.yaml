@@ -1,0 +1,9 @@
+input_path: data/raw/lichess_db_standard_rated_2013-01.pgn.zst
+max_games: 100
+strict: false
+profile_output_path: reports/sample_profile.json
+
+schema_version: 1.1.0
+position_normalization_version: fen4_legal_ep_v1
+board_encoding_version: board18_abs_v1
+action_encoding_version: action8x8x73_v1

@@ -1,0 +1,27 @@
+{
+  "fixture_pgn": "data\\fixtures\\lichess_2013_01_first20.pgn",
+  "fixture_pgn_zst": "data\\fixtures\\lichess_2013_01_first20.pgn.zst",
+  "fixture_sha256": "47581f7f487a8ee84f91fc3608623865e72811dcc95511e8710482738502b3c6",
+  "rejected_games": 0,
+  "requested_games": 20,
+  "sanitization": {
+    "comments_and_variations": "Removed while cloning to keep fixture compact and non-identifying",
+    "player_names": "Replaced White/Black with deterministic placeholders",
+    "site_urls": "Replaced Site with deterministic placeholder URLs",
+    "stripped_headers": [
+      "WhiteTitle",
+      "BlackTitle",
+      "WhiteFideId",
+      "BlackFideId",
+      "WhiteTeam",
+      "BlackTeam",
+      "WhiteEloDiff",
+      "BlackEloDiff"
+    ]
+  },
+  "scanned_games": 20,
+  "selected_games": 20,
+  "selection_rule": "first N complete valid games by source_game_index",
+  "source_archive": "lichess_db_standard_rated_2013-01.pgn.zst",
+  "source_archive_sha256": "aa40b3671fa3cf1072eb182892cd90b0e1e003a4a5943492f64b77e7f3fd1635"
+}
