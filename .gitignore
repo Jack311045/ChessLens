@@ -1,0 +1,49 @@
+# Python environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Raw and generated data
+data/raw/
+data/processed/
+data/interim/
+data/tmp/
+reports/sample_profile.json
+
+# Large archives and databases
+*.pgn
+*.pgn.zst
+*.parquet
+*.db
+*.duckdb
+*.sqlite
+*.sqlite3
+
+# Model and experiment artifacts
+artifacts/
+models/
+mlruns/
+checkpoints/
+*.onnx
+
+# Caches and tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets and local config
+.env
+.env.*
+*.secret
+secrets/
