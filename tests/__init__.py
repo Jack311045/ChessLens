@@ -1,0 +1,1 @@
+# Tests package marker for stable import behavior during type checking.
