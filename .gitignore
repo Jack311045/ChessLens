@@ -14,6 +14,7 @@ reports/sample_profile.json
 # Large archives and databases
 *.pgn
 *.pgn.zst
+!data/fixtures/*.pgn.zst
 *.parquet
 *.db
 *.duckdb
