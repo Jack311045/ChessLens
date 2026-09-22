@@ -18,6 +18,7 @@ Why:
 - `polars`: lightweight, future-proof analytics and schema checks.
 - `pyarrow`: explicit analytical schemas and Parquet interoperability.
 - `duckdb`: local analytical backend compatibility for next ETL stage.
+- `psutil`: cross-platform process memory sampling for measured peak RSS ingestion metrics.
 - `PyYAML`: externalized ingestion config loading.
 
 ## Development Dependencies

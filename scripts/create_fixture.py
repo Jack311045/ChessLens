@@ -87,8 +87,9 @@ def create_fixture(
 
     config = load_ingestion_config(config_path, overrides=overrides)
 
-    if config.max_games <= 0:
+    if config.max_games is None or config.max_games <= 0:
         raise ValueError("Fixture generation requires max_games > 0")
+    target_games = config.max_games
     if config.fixture_output_pgn is None or config.fixture_output_zst is None:
         raise ValueError("Fixture config must include fixture_output_pgn and fixture_output_zst")
     if config.fixture_manifest_path is None:
@@ -121,12 +122,12 @@ def create_fixture(
             continue
 
         selected_games.append(_sanitize_game_headers(raw_game, fixture_index=len(selected_games)))
-        if len(selected_games) >= config.max_games:
+        if len(selected_games) >= target_games:
             break
 
-    if len(selected_games) < config.max_games:
+    if len(selected_games) < target_games:
         raise RuntimeError(
-            f"Requested {config.max_games} complete valid games, found only {len(selected_games)}"
+            f"Requested {target_games} complete valid games, found only {len(selected_games)}"
         )
 
     _write_fixture_pgn(selected_games, config.fixture_output_pgn)
@@ -138,7 +139,7 @@ def create_fixture(
         "source_archive": source_archive_name,
         "source_archive_sha256": source_sha256,
         "selection_rule": "first N complete valid games by source_game_index",
-        "requested_games": config.max_games,
+        "requested_games": target_games,
         "selected_games": len(selected_games),
         "scanned_games": scanned_games,
         "rejected_games": rejected_games,

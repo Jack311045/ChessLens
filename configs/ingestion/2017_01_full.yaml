@@ -1,0 +1,19 @@
+input_path: data/raw/lichess_db_standard_rated_2017-01.pgn.zst
+output_root: data/processed
+expected_source_sha256: d1236dcd954089aee162c7b0d82f51162f7c912882343d47b77ba5c0e05512f6
+max_games: null
+strict: false
+require_complete_games: true
+batch_games: 10000
+max_buffered_records: 500000
+parquet_compression: zstd
+parquet_row_group_size: 50000
+player_hash_mode: hmac_sha256
+player_hmac_key_env: CHESSLENS_PLAYER_HMAC_KEY
+player_hmac_key_id_env: CHESSLENS_PLAYER_HMAC_KEY_ID
+source_month: 2017-01
+
+schema_version: 1.1.0
+position_normalization_version: fen4_legal_ep_v1
+board_encoding_version: board18_abs_v1
+action_encoding_version: action8x8x73_v1

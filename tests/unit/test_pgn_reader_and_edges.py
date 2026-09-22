@@ -37,6 +37,23 @@ def test_player_hash_deterministic_and_non_empty() -> None:
     assert hash_player_identifier("") is None
 
 
+def test_hmac_hash_is_stable_for_same_key() -> None:
+    hash_a = hash_player_identifier("SomePlayer", secret_key="alpha", mode="hmac_sha256")
+    hash_b = hash_player_identifier("someplayer", secret_key="alpha", mode="hmac_sha256")
+    assert hash_a == hash_b
+
+
+def test_hmac_hash_changes_with_key() -> None:
+    hash_a = hash_player_identifier("SomePlayer", secret_key="alpha", mode="hmac_sha256")
+    hash_b = hash_player_identifier("SomePlayer", secret_key="beta", mode="hmac_sha256")
+    assert hash_a != hash_b
+
+
+def test_hmac_mode_requires_secret_key() -> None:
+    with pytest.raises(ValueError, match="secret key"):
+        hash_player_identifier("SomePlayer", mode="hmac_sha256")
+
+
 def test_empty_pgn_returns_no_games(tmp_path: Path) -> None:
     archive = write_zst_text(tmp_path, "")
     assert list(iter_raw_games(archive, max_games=10)) == []

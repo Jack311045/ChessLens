@@ -9,6 +9,7 @@ import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import chess
 import chess.pgn
@@ -32,6 +33,8 @@ from chesslens.features.position_encoding import (
 _MONTH_PATTERN = re.compile(r"(\d{4}-\d{2})")
 _CLOCK_PATTERN = re.compile(r"\[%clk\s+([^\]]+)\]")
 _COMPLETE_RESULTS = {"1-0", "0-1", "1/2-1/2"}
+
+PlayerHashMode = Literal["fixture_placeholder", "hmac_sha256"]
 
 
 @dataclass(frozen=True)
@@ -70,12 +73,16 @@ def stable_game_id(source_archive_sha256: str, source_game_index: int) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def hash_player_identifier(player_name: str | None, secret_key: str | None = None) -> str | None:
+def hash_player_identifier(
+    player_name: str | None,
+    secret_key: str | None = None,
+    mode: PlayerHashMode = "fixture_placeholder",
+) -> str | None:
     """
     Return stable anonymized player identifiers.
 
-    In production this should always use secret_key so that the identifier is an HMAC.
-    This phase allows a deterministic fallback for tiny local fixtures.
+    In production this should use explicit HMAC mode with a secret key.
+    Fixture mode provides deterministic placeholder hashing for sanitized local data.
     """
     if player_name is None:
         return None
@@ -84,10 +91,14 @@ def hash_player_identifier(player_name: str | None, secret_key: str | None = Non
         return None
 
     raw = normalized.encode("utf-8")
-    if secret_key:
+    if mode == "hmac_sha256":
+        if not secret_key:
+            raise ValueError("hmac_sha256 mode requires a non-empty secret key")
         digest = hmac.new(secret_key.encode("utf-8"), raw, hashlib.sha256).hexdigest()
-    else:
+    elif mode == "fixture_placeholder":
         digest = hashlib.sha256(f"fixture-placeholder|{normalized}".encode()).hexdigest()
+    else:
+        raise ValueError(f"Unsupported player hash mode: {mode}")
     return f"player_{digest[:24]}"
 
 
@@ -163,6 +174,8 @@ def parse_game_to_records(
     source_game_index: int,
     schema_version: str = SCHEMA_VERSION,
     run_id: str = "local-dev",
+    player_hash_mode: PlayerHashMode = "fixture_placeholder",
+    player_hash_secret: str | None = None,
 ) -> ParsedGame:
     if game.errors:
         message = "; ".join(str(err) for err in game.errors)
@@ -282,8 +295,16 @@ def parse_game_to_records(
         eco=game.headers.get("ECO"),
         opening=game.headers.get("Opening"),
         termination=game.headers.get("Termination"),
-        white_player_hash=hash_player_identifier(game.headers.get("White")),
-        black_player_hash=hash_player_identifier(game.headers.get("Black")),
+        white_player_hash=hash_player_identifier(
+            game.headers.get("White"),
+            secret_key=player_hash_secret,
+            mode=player_hash_mode,
+        ),
+        black_player_hash=hash_player_identifier(
+            game.headers.get("Black"),
+            secret_key=player_hash_secret,
+            mode=player_hash_mode,
+        ),
         ply_count=len(move_records),
         schema_version=schema_version,
     )
@@ -304,6 +325,8 @@ def iter_parsed_games(
     source_archive_sha256: str | None = None,
     run_id: str = "local-dev",
     on_error: Callable[[IngestionErrorRecord], None] | None = None,
+    player_hash_mode: PlayerHashMode = "fixture_placeholder",
+    player_hash_secret: str | None = None,
 ) -> Iterator[ParsedGame]:
     source_archive = archive_path.name
     archive_sha256 = source_archive_sha256 or compute_sha256(archive_path)
@@ -317,6 +340,8 @@ def iter_parsed_games(
                 source_game_index=source_game_index,
                 schema_version=schema_version,
                 run_id=run_id,
+                player_hash_mode=player_hash_mode,
+                player_hash_secret=player_hash_secret,
             )
         except GameParseError as exc:
             if on_error:
