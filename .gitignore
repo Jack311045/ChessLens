@@ -24,9 +24,21 @@ reports/sample_profile.json
 # Model and experiment artifacts
 artifacts/
 models/
+!dbt/models/
+!dbt/models/**
+!dbt/tests/
+!dbt/tests/**
+!dbt/macros/
+!dbt/macros/**
 mlruns/
 checkpoints/
 *.onnx
+
+# dbt generated artifacts
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
 
 # Caches and tooling
 .pytest_cache/

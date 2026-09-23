@@ -1,0 +1,23 @@
+select
+    game_id,
+    ply,
+    source_month,
+    position_id,
+    pre_move_fen,
+    normalized_pre_move_fen,
+    side_to_move,
+    played_move_uci,
+    played_move_san,
+    halfmove_clock,
+    fullmove_number,
+    clock_annotation_raw,
+    white_rating,
+    black_rating,
+    time_control_raw,
+    eco,
+    opening,
+    result as final_result_label,
+    termination as termination_label,
+    game_ply_count,
+    schema_version
+from {{ ref('int_move_context') }}

@@ -27,3 +27,33 @@ jobs:
 
       - name: Test
         run: uv run pytest -q tests/unit tests/property tests/integration
+
+      - name: Build fixture ingestion dataset
+        shell: bash
+        run: |
+          mkdir -p data/tmp
+          output="$(uv run python -m chesslens.ingestion.run_ingestion --config configs/ingestion/fixture_etl.yaml)"
+          echo "$output"
+
+          dataset_path="$(echo "$output" | awk -F= '/^dataset_path=/{print $2}')"
+          if [ -z "$dataset_path" ]; then
+            echo "Unable to parse dataset_path from ingestion output" >&2
+            exit 1
+          fi
+
+          echo "CHESSLENS_DATASET_ROOT=$dataset_path" >> "$GITHUB_ENV"
+          echo "CHESSLENS_DUCKDB_PATH=data/tmp/chesslens_ci_warehouse.duckdb" >> "$GITHUB_ENV"
+          echo "CHESSLENS_DUCKDB_MEMORY_LIMIT=1GB" >> "$GITHUB_ENV"
+          echo "CHESSLENS_DUCKDB_TEMP_DIR=data/tmp/duckdb_temp_ci" >> "$GITHUB_ENV"
+
+      - name: Warehouse preflight
+        run: uv run python -m chesslens.warehouse.preflight
+
+      - name: dbt debug
+        run: uv run dbt debug --project-dir dbt --profiles-dir dbt
+
+      - name: dbt compile
+        run: uv run dbt compile --project-dir dbt --profiles-dir dbt
+
+      - name: dbt build
+        run: uv run dbt build --project-dir dbt --profiles-dir dbt

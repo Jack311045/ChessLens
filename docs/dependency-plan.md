@@ -20,6 +20,8 @@ Why:
 - `duckdb`: local analytical backend compatibility for next ETL stage.
 - `psutil`: cross-platform process memory sampling for measured peak RSS ingestion metrics.
 - `PyYAML`: externalized ingestion config loading.
+- `dbt-core` (pinned): dbt CLI and SQL DAG execution for Phase 1.2b warehouse transformations.
+- `dbt-duckdb` (pinned): dbt adapter that materializes models in DuckDB and reads local views.
 
 ## Development Dependencies
 
@@ -86,6 +88,15 @@ Defined in `pyproject.toml`:
 `uv run ruff check .`:
 
 - runs lint checks against repository code.
+
+`uv run dbt build --project-dir dbt --profiles-dir dbt`:
+
+- executes Phase 1.2b staging/intermediate/mart models and tests in DuckDB.
+
+`uv run python -m chesslens.warehouse.preflight`:
+
+- validates published dataset completeness before dbt runs;
+- registers `bronze_*` DuckDB views over parquet and manifest inputs.
 
 If `uv` is not on PATH in Windows:
 

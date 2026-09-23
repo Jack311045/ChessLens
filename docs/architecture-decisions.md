@@ -1,4 +1,4 @@
-# Architecture Decisions (Phase 0 and 1.1)
+# Architecture Decisions (Phase 0 through 1.2b)
 
 This file records early decisions using a lightweight ADR style: context, decision, consequences, alternatives.
 
@@ -191,23 +191,27 @@ Alternatives considered:
 Why not chosen:
 - Harder to test, reuse, and type-check.
 
-## ADR-011: defer substantive dbt until real ingestion outputs exist
+## ADR-011: defer substantive dbt until real ingestion outputs exist (historical)
 
 Context:
 - dbt models need actual staged sources and known grain.
 
 Decision:
-- Create dbt skeleton and documentation only in this PR.
+- Create dbt skeleton and documentation only in the early phase.
 
 Consequences:
 - Avoid fake SQL transformations disconnected from produced data.
-- Next ETL PR can add real lineage-backed models.
+- Later ETL work can add real lineage-backed models after bronze outputs stabilize.
 
 Alternatives considered:
 - Create placeholder SQL with invented sources.
 
 Why not chosen:
 - Creates misleading project evidence and maintenance burden.
+
+Status update:
+
+- This decision was intentionally temporary and has now been superseded by ADR-018 and ADR-019 in Phase 1.2b.
 
 ## ADR-012: publish only bronze games/moves/errors in Phase 1.2a
 
@@ -335,3 +339,47 @@ Alternatives considered:
 
 Why not chosen:
 - Conflates phases and can mislead comparisons.
+
+## ADR-018: preflight-registered DuckDB bronze views as dbt sources
+
+Context:
+- dbt models should consume published parquet outputs directly, but model runs must fail early on incomplete or inconsistent dataset roots.
+
+Decision:
+- Introduce `python -m chesslens.warehouse.preflight` as a mandatory step before dbt execution.
+- Preflight validates `CHESSLENS_DATASET_ROOT`, manifest completeness, required parquet parts, and manifest-vs-physical row counts.
+- Preflight registers DuckDB views (`bronze_games`, `bronze_moves`, `bronze_ingestion_errors`, `bronze_manifest`) over parquet/json inputs.
+- dbt source definitions point to these registered views in the local DuckDB database.
+
+Consequences:
+- Clear failure messages happen before warehouse model execution.
+- dbt stays package-light (`dbt-core` + `dbt-duckdb`) without additional external table packages.
+- Physical bronze data remains parquet; no full-copy loading is introduced.
+
+Alternatives considered:
+- Source declarations that read parquet directly with adapter-specific YAML metadata.
+- Copying bronze parquet into managed DuckDB tables first.
+
+Why not chosen:
+- Adapter-specific source metadata is more brittle across dbt versions and harder to validate explicitly.
+- Copying full bronze datasets increases storage and runtime cost unnecessarily.
+
+## ADR-019: leakage-aware marts with explicit outcome labeling boundaries
+
+Context:
+- Move-level analytics and training examples must preserve strict pre-move feature boundaries.
+
+Decision:
+- Build `fct_move_events` with explicit post-outcome labels (`final_result_label`, `termination_label`) marked as non-feature columns.
+- Build `mart_policy_examples` at `(game_id, ply)` grain with pre-move features plus `played_move_uci` target only.
+- Enforce leakage guardrails via singular dbt tests (forbidden post-outcome columns absent in `mart_policy_examples`).
+
+Consequences:
+- Model-training datasets have explicit semantics and safer defaults.
+- Downstream users can distinguish analytical labels from allowable pre-move features.
+
+Alternatives considered:
+- Reuse one wide mart for both analytics and training use cases.
+
+Why not chosen:
+- Mixed-purpose wide marts increase leakage risk and reduce traceability.

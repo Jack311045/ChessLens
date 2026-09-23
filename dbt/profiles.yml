@@ -1,0 +1,11 @@
+chesslens:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('CHESSLENS_DUCKDB_PATH', 'data/tmp/chesslens_warehouse.duckdb') }}"
+      schema: main
+      threads: 4
+      settings:
+        memory_limit: "{{ env_var('CHESSLENS_DUCKDB_MEMORY_LIMIT', '4GB') }}"
+        temp_directory: "{{ env_var('CHESSLENS_DUCKDB_TEMP_DIR', 'data/tmp/duckdb_temp') }}"

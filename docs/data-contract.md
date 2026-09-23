@@ -1,8 +1,8 @@
-# Data Contract (Phase 1.2a)
+# Data Contract (Phase 1.2a and 1.2b)
 
 Schema version: `1.1.0`.
 
-This document defines logical contracts and semantics for ingestion.
+This document defines logical contracts and semantics for ingestion and the Phase 1.2b warehouse layer.
 
 Phase 1.2a publishes bronze Parquet datasets for:
 
@@ -11,6 +11,12 @@ Phase 1.2a publishes bronze Parquet datasets for:
 - `ingestion_errors`
 
 with Hive-style partitioning by `source_month`.
+
+Phase 1.2b consumes those published parquet outputs and materializes:
+
+- staging: `stg_games`, `stg_moves`, `stg_ingestion_errors`, `stg_manifest`;
+- intermediate: `int_positions`, `int_move_context`;
+- marts: `fct_move_events`, `mart_policy_examples`.
 
 `PositionRecord` remains a logical contract, but this phase intentionally does not publish a physical bronze `positions` table. Global deduplication of positions is deferred to Phase 1.2b dbt SQL (`int_positions`) so deduplication is global, not only game-local or batch-local.
 
@@ -250,3 +256,102 @@ Operational guarantees:
 - Part filenames are deterministic within a dataset (`part-000000`, `part-000001`, ...).
 - Publication occurs only after staged DuckDB + schema validation passes.
 - Re-running the same effective config reuses an existing completed dataset rather than appending duplicates.
+
+## Warehouse Contracts (Phase 1.2b)
+
+### Source Registration Contract
+
+Before dbt runs, `python -m chesslens.warehouse.preflight` must succeed and register DuckDB bronze views:
+
+- `main.bronze_games`
+- `main.bronze_moves`
+- `main.bronze_ingestion_errors`
+- `main.bronze_manifest`
+
+Preflight must fail for:
+
+- missing `CHESSLENS_DATASET_ROOT`;
+- missing `_manifest.json`;
+- non-`complete` manifest status;
+- missing required parquet parts;
+- manifest counts that disagree with physical parquet row counts.
+
+### `stg_games`
+
+Grain:
+
+- one row per `game_id`.
+
+Required checks:
+
+- `game_id` unique and non-null;
+- `result` in `{1-0, 0-1, 1/2-1/2}`.
+
+### `stg_moves`
+
+Grain:
+
+- one row per (`game_id`, `ply`).
+
+Required checks:
+
+- (`game_id`, `ply`) uniqueness;
+- `game_id` foreign key to `stg_games`;
+- `position_id` non-null;
+- `side_to_move` in `{w, b}`;
+- ply is contiguous and starts at zero within each game.
+
+### `int_positions`
+
+Grain:
+
+- one row per `position_id` across all games.
+
+Required checks:
+
+- one `position_id` must map to exactly one `normalized_fen`.
+
+Core fields:
+
+- `position_id`, `normalized_fen`, `side_to_move`, `castling_rights`, `en_passant_square`, `occurrence_count`, `first_seen_source_month`, `last_seen_source_month`.
+
+### `int_move_context`
+
+Grain:
+
+- one row per (`game_id`, `ply`).
+
+Contract:
+
+- enriches move rows with game-level metadata without changing move grain.
+
+### `fct_move_events`
+
+Grain:
+
+- one row per (`game_id`, `ply`).
+
+Contract:
+
+- includes explicit outcome labels (`final_result_label`, `termination_label`) for analytics;
+- these outcome labels are prohibited as pre-move model features.
+
+### `mart_policy_examples`
+
+Grain:
+
+- one row per (`game_id`, `ply`).
+
+Contract:
+
+- contains leakage-aware pre-move fields and supervised target `played_move_uci`;
+- computes mover/opponent ratings from `side_to_move`;
+- must not contain post-outcome columns (`result`, `termination`, `final_result_label`, `termination_label`, `ply_count`, `game_ply_count`).
+
+### Manifest Reconciliation Contract
+
+Warehouse tests must assert that:
+
+- bronze and staging row counts match for all three bronze datasets;
+- manifest counts (`accepted_games`, `emitted_moves`, `error_records`) match staging row counts;
+- manifest dataset row-count entries match staging row counts.

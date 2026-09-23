@@ -1,0 +1,33 @@
+name: chesslens_dbt
+version: 1.0.0
+config-version: 2
+
+profile: chesslens
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+analysis-paths: ["analyses"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+vars:
+  dataset_root: "{{ env_var('CHESSLENS_DATASET_ROOT', '') }}"
+
+models:
+  chesslens_dbt:
+    +persist_docs:
+      relation: true
+      columns: true
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+      int_positions:
+        +materialized: table
+    marts:
+      +materialized: table

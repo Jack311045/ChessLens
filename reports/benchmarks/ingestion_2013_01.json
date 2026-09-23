@@ -1,0 +1,44 @@
+{
+  "counts": {
+    "accepted_games": 121332,
+    "emitted_moves": 8155187,
+    "error_records": 0,
+    "rejected_games": 0
+  },
+  "dataset": {
+    "dataset_id": "c7703b6c4404e13814dedd4431146c09fd6a389843a400a7ea4c4e2ec40ab4a9",
+    "source_archive_filename": "lichess_db_standard_rated_2013-01.pgn.zst",
+    "source_archive_sha256": "aa40b3671fa3cf1072eb182892cd90b0e1e003a4a5943492f64b77e7f3fd1635",
+    "source_month": "2013-01",
+    "status": "complete"
+  },
+  "generated_utc": "2026-09-23T16:37:18.943633+00:00",
+  "git_commit": "ae989b2",
+  "performance": {
+    "peak_rss_bytes": 1665974272,
+    "processing_games_per_second": 41.1391,
+    "processing_moves_per_second": 2765.115,
+    "throughput_games_per_second": 41.1388,
+    "throughput_moves_per_second": 2765.0973
+  },
+  "runtime": {
+    "cpu_count_logical": 16,
+    "machine": "AMD64",
+    "memory_total_gib": 31.53,
+    "os": "Windows",
+    "os_release": "10",
+    "python": "3.11.16"
+  },
+  "timings_seconds": {
+    "checksum_duration_seconds": 0.016824,
+    "processing_and_validation_duration_seconds": 2949.312107,
+    "total_duration_seconds": 2949.330921
+  },
+  "versions": {
+    "action_encoding": "action8x8x73_v1",
+    "board_encoding": "board18_abs_v1",
+    "ingestion_pipeline": "parquet_etl_v1",
+    "position_normalization": "fen4_legal_ep_v1",
+    "schema": "1.1.0"
+  }
+}

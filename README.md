@@ -7,6 +7,7 @@ This repository currently implements:
 - Phase 0 foundation: reproducible environment, package layout, tests, CI, and architecture decisions.
 - Phase 1.1 contracts: versioned game/move/position/eval/error/manifest schemas.
 - Phase 1.2a ingestion: bounded-memory batch ETL to schema-controlled partitioned Parquet with safe publication, reproducibility manifests, and DuckDB validation.
+- Phase 1.2b warehouse: DuckDB/dbt source registration, staging/intermediate/marts, and data quality tests for training-safe marts.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 This repository does not yet implement the full 10M-game ETL, model training, deployment, or performance claims.
@@ -34,12 +35,14 @@ Implemented now:
 - explicit ingestion pipeline version (`parquet_etl_v1`) included in dataset identity;
 - optional source checksum verification (`expected_source_sha256`);
 - staged write + validation + publish workflow for idempotent dataset publication;
+- dbt models for `stg_games`, `stg_moves`, `stg_ingestion_errors`, `stg_manifest`, `int_positions`, `int_move_context`, `fct_move_events`, and `mart_policy_examples`;
+- preflight validation + DuckDB bronze view registration before dbt builds;
+- singular and generic dbt tests for keys, contiguity, manifest reconciliation, and leakage guards.
 - optional HMAC-based player anonymization mode for real archives.
 
 Deferred on purpose:
 
 - Airflow DAG execution;
-- dbt SQL transformations beyond skeleton;
 - LightGBM/PyTorch/Optuna/MLflow training workflows;
 - FastAPI/ONNX/Docker/AWS serving.
 
@@ -53,7 +56,9 @@ Current flow in this phase:
 4. Buffer only bounded batches of records and write partitioned Parquet parts.
 5. Validate relational and schema invariants with DuckDB SQL.
 6. Publish completed datasets by renaming validated staging output into deterministic dataset paths.
-7. Emit run manifest metrics for reproducibility and benchmarking.
+7. Validate published dataset roots and register DuckDB bronze views for dbt.
+8. Build dbt staging/intermediate/marts and enforce warehouse quality tests.
+9. Emit run manifest metrics for reproducibility and benchmarking.
 
 Reproducibility semantics:
 
@@ -71,13 +76,14 @@ chesslens/
 │   ├── fixtures/
 │   ├── manifests/
 │   └── raw/                  # ignored
-├── dbt/                      # skeleton only in this phase
+├── dbt/                      # Phase 1.2b warehouse models and tests
 ├── docs/
 ├── scripts/create_fixture.py
 ├── src/chesslens/
 │   ├── domain/
 │   ├── features/
 │   ├── ingestion/
+│   ├── warehouse/
 │   └── validation/
 └── tests/
 ```
@@ -107,6 +113,12 @@ Make targets:
 - `make inspect-sample`
 - `make ingest-fixture`
 - `make ingest-2013-sample`
+- `make warehouse-preflight`
+- `make dbt-debug`
+- `make dbt-compile`
+- `make dbt-build`
+- `make dbt-docs`
+- `make benchmark-report`
 - `make test`
 - `make lint`
 - `make typecheck`
@@ -118,6 +130,13 @@ Windows direct equivalents:
 - `python -m uv run python -m chesslens.ingestion.sample_profiler --config configs/ingestion/smoke.yaml`
 - `python -m uv run python -m chesslens.ingestion.run_ingestion --config configs/ingestion/fixture_etl.yaml`
 - `python -m uv run python -m chesslens.ingestion.run_ingestion --config configs/ingestion/2013_01_sample.yaml`
+- `python -m uv run python -m chesslens.warehouse.preflight`
+- `python -m uv run dbt debug --project-dir dbt --profiles-dir dbt`
+- `python -m uv run dbt compile --project-dir dbt --profiles-dir dbt`
+- `python -m uv run dbt build --project-dir dbt --profiles-dir dbt`
+- `python -m uv run dbt docs generate --project-dir dbt --profiles-dir dbt`
+- `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root <dataset-root> --output reports/benchmarks/ingestion_benchmark.json`
+- `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root data/processed/datasets/c7703b6c4404e13814dedd4431146c09fd6a389843a400a7ea4c4e2ec40ab4a9 --output reports/benchmarks/ingestion_2013_01.json`
 - `python -m uv run pytest -q`
 - `python -m uv run ruff check .`
 - `python -m uv run mypy src tests scripts`
@@ -137,6 +156,27 @@ HMAC key-ID policy:
 - rotating or changing the secret requires a new key ID;
 - never reuse one key ID for different secrets;
 - key IDs may be written to manifests, but secrets must never appear in YAML, Git, manifests, logs, or tests.
+
+## Phase 1.2b dbt Warehouse Workflow
+
+Required environment variable:
+
+- `CHESSLENS_DATASET_ROOT` -> published dataset path, e.g. `data/processed/datasets/<dataset_id>`.
+
+Optional environment variables (defaults are safe for local development):
+
+- `CHESSLENS_DUCKDB_PATH` (default `data/tmp/chesslens_warehouse.duckdb`)
+- `CHESSLENS_DUCKDB_MEMORY_LIMIT` (default `4GB`)
+- `CHESSLENS_DUCKDB_TEMP_DIR` (default `data/tmp/duckdb_temp`)
+
+Recommended sequence:
+
+1. Run ingestion to create or reuse a published dataset.
+2. Export `CHESSLENS_DATASET_ROOT`.
+3. Run preflight (`python -m chesslens.warehouse.preflight`) to verify manifest/data consistency and register DuckDB bronze views.
+4. Run dbt `debug`, `compile`, `build`, and optionally `docs generate`.
+
+Preflight fails early with explicit errors when the dataset root is missing, manifest status is not complete, required parquet partitions are absent, or manifest counts disagree with physical parquet counts.
 
 ## Phase 1.2a Output Layout
 
@@ -213,7 +253,7 @@ This report is a functional validation sample, not a statistical population stud
 - Property tests: randomized legal positions for encode/decode and determinism invariants.
 - Integration tests: streaming fixture replay, schema conformance, Arrow/Parquet round-trips.
 
-CI runs Ruff, mypy, and all tests on checked-in fixture data only.
+CI runs Ruff, mypy, and all Python tests first, then builds a fixture ingestion dataset and executes warehouse preflight + dbt `debug`/`compile`/`build`.
 
 ## Data Source and Licensing
 
@@ -248,3 +288,5 @@ Lichess database exports are published under CC0. Verify current terms at the of
 - Encoding specification: `docs/encoding-specification.md`
 - Architecture decisions: `docs/architecture-decisions.md`
 - Learning walkthrough: `docs/learning/phase0_and_1_1_walkthrough.md`
+- Phase 1.2a walkthrough: `docs/learning/phase1_2a_parquet_etl_walkthrough.md`
+- Phase 1.2b walkthrough: `docs/learning/phase1_2b_dbt_sql_walkthrough.md`
