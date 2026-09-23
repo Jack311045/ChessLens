@@ -1,0 +1,12 @@
+# Streaming PGN sharding config for the tiny committed fixture.
+# Used by tests and local demos; produces 3 shards of size 7 -> [7, 7, 6].
+input_path: data/fixtures/lichess_2013_01_first20.pgn.zst
+shard_output_root: data/raw_shards
+source_month: 2013-01
+expected_source_sha256: 47581f7f487a8ee84f91fc3608623865e72811dcc95511e8710482738502b3c6
+expected_total_games: 20
+games_per_shard: 7
+compression_codec: zstd
+compression_level: 10
+max_game_bytes: 8388608
+chunk_size: 1048576

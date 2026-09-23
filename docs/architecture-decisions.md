@@ -1,4 +1,4 @@
-# Architecture Decisions (Phase 0 through 1.2b)
+# Architecture Decisions (Phase 0 through 1.2c)
 
 This file records early decisions using a lightweight ADR style: context, decision, consequences, alternatives.
 
@@ -383,3 +383,117 @@ Alternatives considered:
 
 Why not chosen:
 - Mixed-purpose wide marts increase leakage risk and reduce traceability.
+
+## ADR-020: PGN-game-boundary sharding over arbitrary byte splitting
+
+Context:
+- A ~1.9 GB, 10.68M-game monthly archive cannot be ingested in one uninterrupted
+  session, so it must be split into independently processable pieces.
+
+Decision:
+- Split on complete PGN game boundaries (lines starting with `[Event `) while
+  streaming the decompressed byte stream, and write each shard as its own zstd
+  stream so it is independently decompressible.
+- Preserve exact decompressed game bytes (no re-serialization) to keep headers,
+  moves, comments, `[%clk]`/`[%eval]` annotations, promotions, castling, and en
+  passant semantics intact.
+- Bound memory to one in-flight game plus one read chunk, with a configurable
+  `max_game_bytes` guard.
+
+Consequences:
+- Every shard is a valid archive that re-parses identically.
+- Sharding is O(stream) with bounded memory regardless of archive size.
+- The boundary rule is a documented, tested assumption about Lichess standard
+  exports, not a universal PGN grammar.
+
+Alternatives considered:
+- Splitting the compressed `.zst` at arbitrary byte offsets.
+- Splitting decompressed text at arbitrary offsets.
+- Re-serializing games through a full PGN parser.
+
+Why not chosen:
+- zstd frames are not decodable at arbitrary offsets, so byte-range splits produce
+  undecodable shards.
+- Arbitrary text splits can cut a game in half.
+- Re-serialization risks silently dropping annotations and is far slower.
+
+## ADR-021: global game identity is preserved across sharding
+
+Context:
+- Sharding must not change any game's logical identity, or downstream joins and
+  deduplication would break and direct-vs-sharded results would diverge.
+
+Decision:
+- Keep `game_id = sha256(parent_archive_sha256 + "|" + global_source_game_index)`.
+- Thread a typed `SourceLineage` (parent archive name + SHA-256 + global index
+  offset + shard lineage) into the existing single-dataset ingestion instead of
+  passing loose strings.
+- Use the parent archive SHA for identity and the shard SHA only for physical
+  dataset identity/verification.
+- The global index counts every raw game boundary, including tolerantly-rejected
+  games, so rejecting one game does not shift later identities.
+
+Consequences:
+- A game receives the same `game_id` whether ingested directly or from a shard
+  (proven by an automated test).
+- Direct single-dataset ingestion identity and existing published `dataset_id`s are
+  unchanged (lineage fields are added to identity only when sharding).
+
+Alternatives considered:
+- Deriving identity from shard SHA + local shard index.
+
+Why not chosen:
+- It would make identity depend on the arbitrary sharding boundary and break global
+  uniqueness and reproducibility.
+
+## ADR-022: collection metrics use active processing time, not wall clock
+
+Context:
+- Sharded ingestion spans multiple sessions separated by hours or days, so wall-clock
+  duration is meaningless for throughput.
+
+Decision:
+- Record per-shard active processing seconds and aggregate them; report throughput
+  from that sum.
+- Store one entry per shard and recompute aggregates from unique entries so reused
+  shards never double-count; report peak RSS as the max across shards.
+- Derive `collection_id` from logical inputs only (parent SHA, month, shard-plan
+  identity hash, versions, key id) — no timestamps, secrets, absolute paths, or
+  run ids.
+
+Consequences:
+- Throughput and resource figures stay honest across multi-day, resumable runs.
+- The 10M milestone flag is only satisfied when ≥ 10,000,000 games are actually
+  accepted and published.
+
+Alternatives considered:
+- Using first-start to last-update wall-clock time.
+
+Why not chosen:
+- It would understate throughput by orders of magnitude and mislead comparisons.
+
+## ADR-023: resume via boundary rescan (parent zstd has no random access)
+
+Context:
+- Resuming needs to continue at the next unprocessed game, but a zstd stream cannot
+  seek to a specific game boundary.
+
+Decision:
+- On resume, re-open the parent and boundary-scan past already-emitted games
+  (discarding them) before continuing, after verifying the parent identity and every
+  completed shard checksum.
+- Publish shards with atomic `.partial` -> final rename; clean only the exact next
+  `.partial` and any unreferenced orphan shard left by a crash between publish and
+  manifest write.
+
+Consequences:
+- Resume is safe and idempotent; completed shards are never overwritten.
+- The remaining limitation is that resume cost includes a linear boundary rescan of
+  the already-processed prefix (cheap scanning, no chess work).
+
+Alternatives considered:
+- Building a zstd seek index or re-compressing with seekable frames.
+
+Why not chosen:
+- Adds format complexity and a new dependency for a one-time linear scan that is
+  already inexpensive relative to ingestion.

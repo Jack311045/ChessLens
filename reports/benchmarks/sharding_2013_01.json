@@ -1,0 +1,18 @@
+{
+  "benchmark": "phase_1_2c_sharding_2013_01",
+  "note": "measured sharding-only throughput; ingestion not included",
+  "parent_archive": "lichess_db_standard_rated_2013-01.pgn.zst",
+  "parent_archive_sha256": "aa40b3671fa3cf1072eb182892cd90b0e1e003a4a5943492f64b77e7f3fd1635",
+  "source_month": "2013-01",
+  "games_per_shard": 25000,
+  "total_emitted_games": 121332,
+  "shard_game_counts": [25000, 25000, 25000, 25000, 21332],
+  "total_shard_count": 5,
+  "sharding_active_seconds": 11.0278,
+  "sharding_games_per_second": 11002.35,
+  "peak_rss_mib": 82.0,
+  "environment": {
+    "os": "Windows",
+    "python": "3.11"
+  }
+}

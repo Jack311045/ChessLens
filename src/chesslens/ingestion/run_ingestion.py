@@ -10,15 +10,12 @@ import os
 import platform
 import re
 import subprocess
-import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
-
-import psutil
 
 from chesslens.domain.records import INGESTION_PIPELINE_VERSION, IngestionErrorRecord
 from chesslens.ingestion.config import IngestionConfig, load_ingestion_config
@@ -31,6 +28,8 @@ from chesslens.ingestion.pgn_reader import (
     iter_raw_games,
     parse_game_to_records,
 )
+from chesslens.ingestion.rss import PeakRssSampler
+from chesslens.ingestion.source_lineage import SourceLineage
 from chesslens.validation.dataset_validation import (
     DatasetValidationResult,
     validate_staged_dataset,
@@ -78,37 +77,6 @@ class IngestionRunResult:
     peak_rss_bytes: int
     part_counts: dict[str, int]
     duckdb_validation_result: str
-
-
-class PeakRssSampler:
-    """Cross-platform periodic RSS sampler."""
-
-    def __init__(self, *, interval_seconds: float = 0.05) -> None:
-        self._interval_seconds = interval_seconds
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._peak_rss_bytes = 0
-
-    def start(self) -> None:
-        process = psutil.Process(os.getpid())
-
-        def sampler() -> None:
-            while not self._stop.is_set():
-                try:
-                    rss = int(process.memory_info().rss)
-                    if rss > self._peak_rss_bytes:
-                        self._peak_rss_bytes = rss
-                finally:
-                    self._stop.wait(self._interval_seconds)
-
-        self._thread = threading.Thread(target=sampler, name="peak-rss-sampler", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> int:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-        return self._peak_rss_bytes
 
 
 def _utc_now_iso() -> str:
@@ -343,6 +311,7 @@ def run_ingestion(
     config_path: Path,
     overrides: dict[str, Any] | None = None,
     simulate_failure_after_batches: int | None = None,
+    source_lineage: SourceLineage | None = None,
 ) -> IngestionRunResult:
     config = load_ingestion_config(config_path, overrides=overrides)
 
@@ -353,25 +322,40 @@ def run_ingestion(
 
     total_started = time.perf_counter()
     checksum_started = time.perf_counter()
-    source_archive_sha256 = compute_sha256(config.input_path)
+    physical_sha256 = compute_sha256(config.input_path)
     checksum_duration_seconds = max(time.perf_counter() - checksum_started, 0.0)
     if (
         config.expected_source_sha256 is not None
-        and source_archive_sha256 != config.expected_source_sha256
+        and physical_sha256 != config.expected_source_sha256
     ):
         raise ValueError(
             "Source SHA-256 mismatch: "
-            f"expected {config.expected_source_sha256}, got {source_archive_sha256}"
+            f"expected {config.expected_source_sha256}, got {physical_sha256}"
         )
+
+    if source_lineage is not None:
+        identity_archive_name = source_lineage.identity_archive_name
+        identity_archive_sha256 = source_lineage.identity_archive_sha256
+        global_index_offset = source_lineage.global_game_index_offset
+    else:
+        identity_archive_name = config.input_path.name
+        identity_archive_sha256 = physical_sha256
+        global_index_offset = 0
 
     effective_config = _effective_config_payload(
         config=config,
         source_month=source_month,
         player_hmac_key_id=player_hmac_key_id,
     )
+    if source_lineage is not None:
+        effective_config = {
+            **effective_config,
+            "source_lineage": source_lineage.to_manifest_dict(),
+            "identity_archive_sha256": identity_archive_sha256,
+        }
     configuration_hash = _sha256_text(_canonical_json(effective_config))
     dataset_id = _build_dataset_id(
-        source_archive_sha256=source_archive_sha256,
+        source_archive_sha256=physical_sha256,
         configuration_hash=configuration_hash,
         schema_version=config.schema_version,
         position_normalization_version=config.position_normalization_version,
@@ -391,7 +375,7 @@ def run_ingestion(
                 ("status",): "complete",
                 ("dataset_id",): dataset_id,
                 ("configuration_hash",): configuration_hash,
-                ("source", "archive_sha256"): source_archive_sha256,
+                ("source", "archive_sha256"): physical_sha256,
                 ("source", "source_month"): source_month,
                 ("versions", "schema_version"): config.schema_version,
                 (
@@ -493,12 +477,13 @@ def run_ingestion(
             max_games=config.max_games,
         ):
             scanned_games += 1
+            global_game_index = global_index_offset + source_game_index
             try:
                 parsed = parse_game_to_records(
                     game=raw_game,
-                    source_archive=config.input_path.name,
-                    source_archive_sha256=source_archive_sha256,
-                    source_game_index=source_game_index,
+                    source_archive=identity_archive_name,
+                    source_archive_sha256=identity_archive_sha256,
+                    source_game_index=global_game_index,
                     schema_version=config.schema_version,
                     run_id=run_id,
                     player_hash_mode=config.player_hash_mode,
@@ -522,8 +507,8 @@ def run_ingestion(
 
             if config.require_complete_games and not is_complete_game(game_record):
                 error_record = _incomplete_game_error(
-                    source_archive=config.input_path.name,
-                    source_game_index=source_game_index,
+                    source_archive=identity_archive_name,
+                    source_game_index=global_game_index,
                     run_id=run_id,
                     result=game_record.result,
                     ply_count=game_record.ply_count,
@@ -580,9 +565,12 @@ def run_ingestion(
             "source": {
                 "archive_filename": config.input_path.name,
                 "archive_size_bytes": config.input_path.stat().st_size,
-                "archive_sha256": source_archive_sha256,
+                "archive_sha256": physical_sha256,
                 "source_month": source_month,
             },
+            "source_lineage": (
+                source_lineage.to_manifest_dict() if source_lineage is not None else None
+            ),
             "configuration_hash": configuration_hash,
             "effective_config": effective_config,
             "versions": {
@@ -689,7 +677,7 @@ def run_ingestion(
             "error": str(exc),
             "source": {
                 "archive_filename": config.input_path.name,
-                "archive_sha256": source_archive_sha256,
+                "archive_sha256": physical_sha256,
                 "source_month": source_month,
             },
             "counts": {

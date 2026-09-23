@@ -1,0 +1,25 @@
+# Sharded ingestion orchestrator config for the tiny committed fixture.
+# `input_path`/`output_root` are placeholders; the orchestrator overrides them
+# per shard. The extra orchestration keys below are ignored by the single-dataset
+# ingestion loader and read only by run_sharded_ingestion.
+input_path: data/fixtures/lichess_2013_01_first20.pgn.zst
+output_root: data/processed
+source_month: 2013-01
+strict: false
+require_complete_games: true
+batch_games: 5
+max_buffered_records: 400
+parquet_compression: zstd
+parquet_row_group_size: 128
+player_hash_mode: fixture_placeholder
+
+schema_version: 1.1.0
+position_normalization_version: fen4_legal_ep_v1
+board_encoding_version: board18_abs_v1
+action_encoding_version: action8x8x73_v1
+
+# Orchestration-only keys (ignored by the single-dataset ingestion loader).
+shard_root: data/raw_shards
+collection_root: data/processed/collections
+games_per_shard: 7
+expected_raw_games: 20

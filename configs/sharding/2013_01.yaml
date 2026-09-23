@@ -1,0 +1,13 @@
+# Streaming PGN sharding config for the 2013-01 archive (benchmark path).
+# Uses a deliberately small shard size so the 121,332-game archive splits into
+# many shards for multi-session ingestion demos and benchmarking.
+input_path: data/raw/lichess_db_standard_rated_2013-01.pgn.zst
+shard_output_root: data/raw_shards
+source_month: 2013-01
+expected_source_sha256: aa40b3671fa3cf1072eb182892cd90b0e1e003a4a5943492f64b77e7f3fd1635
+expected_total_games: 121332
+games_per_shard: 25000
+compression_codec: zstd
+compression_level: 10
+max_game_bytes: 8388608
+chunk_size: 1048576

@@ -1,0 +1,16 @@
+# Streaming PGN sharding config for the full 2017-01 archive.
+# Official expected values (do not hardcode these into generic logic):
+#   compressed size : 1,902,198,021 bytes
+#   raw game count  : 10,680,708
+#   shard size      : 250,000 complete games
+#   expected shards : 43 (final shard 180,708 games)
+input_path: data/raw/lichess_db_standard_rated_2017-01.pgn.zst
+shard_output_root: data/raw_shards
+source_month: 2017-01
+expected_source_sha256: d1236dcd954089aee162c7b0d82f51162f7c912882343d47b77ba5c0e05512f6
+expected_total_games: 10680708
+games_per_shard: 250000
+compression_codec: zstd
+compression_level: 10
+max_game_bytes: 8388608
+chunk_size: 1048576
