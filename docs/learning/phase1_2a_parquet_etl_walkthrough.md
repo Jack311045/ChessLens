@@ -85,7 +85,8 @@ So in Phase 1.2a:
 `dataset_id`:
 
 - deterministic identity of the published dataset contents/layout;
-- based on source checksum + canonical effective config + schema/version parameters + non-secret key ID.
+- based on source checksum + canonical effective config + schema/version parameters + pipeline version + non-secret key ID.
+- identifies logical transformation identity, not guaranteed byte-for-byte Parquet equality across all environments.
 
 `run_id`:
 
@@ -96,6 +97,11 @@ Meaning:
 
 - many runs can point to one dataset_id;
 - this is how idempotent reuse works.
+
+Pipeline version note:
+
+- `INGESTION_PIPELINE_VERSION` is part of dataset identity (currently `parquet_etl_v1`).
+- bump it when output-affecting ingestion logic changes without an Arrow schema change.
 
 ## 8. Staging and Publication Safety
 
@@ -146,6 +152,13 @@ For real archives, use `player_hash_mode: hmac_sha256`:
 - manifest includes only non-secret key ID;
 - same key gives stable pseudonyms, different key changes them.
 
+Key-ID discipline:
+
+- one key ID must always represent one stable secret;
+- if the secret changes, the key ID must change;
+- never reuse a key ID for a different secret;
+- never store secrets in YAML, Git, manifests, logs, or tests.
+
 This balances privacy and reproducibility.
 
 ## 12. DuckDB Validation Queries: What They Check
@@ -178,7 +191,22 @@ Strict mode (`strict: true`):
 
 Fatal errors (checksum mismatch, truncated Zstandard stream) are always fatal in either mode.
 
-## 14. How to Run Ingestion Configs
+## 14. Timing Metrics and Boundaries
+
+The manifest stores separate timing metrics:
+
+- `checksum_duration_seconds`: time spent computing source SHA-256.
+- `processing_and_validation_duration_seconds`: time from stream processing start through DuckDB/schema validation completion.
+- `total_duration_seconds`: end-to-end elapsed time for this attempt (checksum + processing/validation + publish bookkeeping).
+
+Throughput metrics are also split:
+
+- `processing_games_per_second` / `processing_moves_per_second`
+- `total_games_per_second` / `total_moves_per_second`
+
+This avoids ambiguous claims from a single blended duration value.
+
+## 15. How to Run Ingestion Configs
 
 Fixture run:
 
@@ -215,7 +243,7 @@ $env:CHESSLENS_PLAYER_HMAC_KEY_ID = "dev-key-1"
 python -m uv run python -m chesslens.ingestion.run_ingestion --config configs/ingestion/2017_01_full.yaml --max-games 100
 ```
 
-## 15. Which Generated Files Are Ignored by Git
+## 16. Which Generated Files Are Ignored by Git
 
 Generated ETL outputs are intentionally ignored:
 

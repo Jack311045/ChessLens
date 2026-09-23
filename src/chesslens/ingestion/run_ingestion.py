@@ -8,6 +8,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import subprocess
 import threading
 import time
@@ -19,7 +20,7 @@ from typing import Any, cast
 
 import psutil
 
-from chesslens.domain.records import IngestionErrorRecord
+from chesslens.domain.records import INGESTION_PIPELINE_VERSION, IngestionErrorRecord
 from chesslens.ingestion.config import IngestionConfig, load_ingestion_config
 from chesslens.ingestion.parquet_writer import PartitionedParquetWriter
 from chesslens.ingestion.pgn_reader import (
@@ -45,6 +46,8 @@ _PACKAGE_VERSION_NAMES = (
     "PyYAML",
 )
 
+_SOURCE_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+
 
 class StrictModeIngestionError(RuntimeError):
     """Raised when strict mode hits a recoverable per-game rejection."""
@@ -69,7 +72,9 @@ class IngestionRunResult:
     rejected_games: int
     emitted_moves: int
     error_records: int
-    duration_seconds: float
+    checksum_duration_seconds: float
+    processing_and_validation_duration_seconds: float
+    total_duration_seconds: float
     peak_rss_bytes: int
     part_counts: dict[str, int]
     duckdb_validation_result: str
@@ -150,6 +155,18 @@ def _resolve_source_month(config: IngestionConfig) -> str:
         raise ValueError(
             "Unable to infer source_month from archive filename; set source_month in config"
         )
+    if not _SOURCE_MONTH_RE.fullmatch(inferred):
+        raise ValueError(
+            "Unable to parse inferred source_month from archive filename in YYYY-MM format; "
+            "set source_month in config"
+        )
+    try:
+        datetime.strptime(inferred, "%Y-%m")
+    except ValueError as exc:
+        raise ValueError(
+            "Inferred source_month from archive filename is not a real calendar month: "
+            f"{inferred!r}"
+        ) from exc
     return inferred
 
 
@@ -199,6 +216,7 @@ def _effective_config_payload(
         "position_normalization_version": config.position_normalization_version,
         "board_encoding_version": config.board_encoding_version,
         "action_encoding_version": config.action_encoding_version,
+        "ingestion_pipeline_version": INGESTION_PIPELINE_VERSION,
     }
 
 
@@ -210,6 +228,7 @@ def _build_dataset_id(
     position_normalization_version: str,
     board_encoding_version: str,
     action_encoding_version: str,
+    ingestion_pipeline_version: str,
     player_hmac_key_id: str | None,
 ) -> str:
     payload = {
@@ -219,9 +238,46 @@ def _build_dataset_id(
         "position_normalization_version": position_normalization_version,
         "board_encoding_version": board_encoding_version,
         "action_encoding_version": action_encoding_version,
+        "ingestion_pipeline_version": ingestion_pipeline_version,
         "player_hmac_key_id": player_hmac_key_id,
     }
     return _sha256_text(_canonical_json(payload))
+
+
+def _read_manifest_identity_field(
+    manifest: dict[str, Any],
+    path: tuple[str, ...],
+) -> tuple[bool, Any]:
+    current: Any = manifest
+    for key in path:
+        if not isinstance(current, dict):
+            return False, None
+        if key not in current:
+            return False, None
+        current = current[key]
+    return True, current
+
+
+def _validate_existing_manifest_identity(
+    *,
+    manifest: dict[str, Any],
+    expected: dict[tuple[str, ...], Any],
+) -> None:
+    issues: list[str] = []
+    for path, expected_value in expected.items():
+        present, actual_value = _read_manifest_identity_field(manifest, path)
+        dotted = ".".join(path)
+        if not present:
+            issues.append(f"missing identity field {dotted}")
+            continue
+        if actual_value != expected_value:
+            issues.append(
+                f"identity mismatch for {dotted}: "
+                f"expected {expected_value!r}, got {actual_value!r}"
+            )
+
+    if issues:
+        raise RuntimeError("Existing dataset manifest identity mismatch: " + "; ".join(issues))
 
 
 def _load_existing_manifest(dataset_path: Path) -> dict[str, Any]:
@@ -295,7 +351,10 @@ def run_ingestion(
     source_month = _resolve_source_month(config)
     player_hmac_secret, player_hmac_key_id = _resolve_player_hash_credentials(config)
 
+    total_started = time.perf_counter()
+    checksum_started = time.perf_counter()
     source_archive_sha256 = compute_sha256(config.input_path)
+    checksum_duration_seconds = max(time.perf_counter() - checksum_started, 0.0)
     if (
         config.expected_source_sha256 is not None
         and source_archive_sha256 != config.expected_source_sha256
@@ -318,6 +377,7 @@ def run_ingestion(
         position_normalization_version=config.position_normalization_version,
         board_encoding_version=config.board_encoding_version,
         action_encoding_version=config.action_encoding_version,
+        ingestion_pipeline_version=INGESTION_PIPELINE_VERSION,
         player_hmac_key_id=player_hmac_key_id,
     )
 
@@ -325,8 +385,25 @@ def run_ingestion(
     final_dataset_path = output_root / "datasets" / dataset_id
     if final_dataset_path.exists():
         existing_manifest = _load_existing_manifest(final_dataset_path)
-        if existing_manifest.get("status") != "complete":
-            raise RuntimeError(f"Existing dataset is not complete: {final_dataset_path}")
+        _validate_existing_manifest_identity(
+            manifest=existing_manifest,
+            expected={
+                ("status",): "complete",
+                ("dataset_id",): dataset_id,
+                ("configuration_hash",): configuration_hash,
+                ("source", "archive_sha256"): source_archive_sha256,
+                ("source", "source_month"): source_month,
+                ("versions", "schema_version"): config.schema_version,
+                (
+                    "versions",
+                    "position_normalization_version",
+                ): config.position_normalization_version,
+                ("versions", "board_encoding_version"): config.board_encoding_version,
+                ("versions", "action_encoding_version"): config.action_encoding_version,
+                ("versions", "ingestion_pipeline_version"): INGESTION_PIPELINE_VERSION,
+                ("versions", "player_hmac_key_id"): player_hmac_key_id,
+            },
+        )
 
         validation_result = _validate_existing_dataset(final_dataset_path, existing_manifest)
         counts = existing_manifest["counts"]
@@ -342,7 +419,16 @@ def run_ingestion(
             rejected_games=int(counts.get("rejected_games", 0)),
             emitted_moves=int(counts.get("emitted_moves", 0)),
             error_records=int(counts.get("error_records", 0)),
-            duration_seconds=float(performance.get("duration_seconds", 0.0)),
+            checksum_duration_seconds=float(performance.get("checksum_duration_seconds", 0.0)),
+            processing_and_validation_duration_seconds=float(
+                performance.get(
+                    "processing_and_validation_duration_seconds",
+                    performance.get("duration_seconds", 0.0),
+                )
+            ),
+            total_duration_seconds=float(
+                performance.get("total_duration_seconds", performance.get("duration_seconds", 0.0))
+            ),
             peak_rss_bytes=int(performance.get("peak_rss_bytes", 0)),
             part_counts={
                 name: int(details.get("part_count", 0))
@@ -363,7 +449,7 @@ def run_ingestion(
     memory_sampler = PeakRssSampler()
     memory_sampler.start()
 
-    start_perf = time.perf_counter()
+    processing_started = time.perf_counter()
     scanned_games = 0
     accepted_games = 0
     rejected_games = 0
@@ -476,9 +562,13 @@ def run_ingestion(
         )
 
         peak_rss_bytes = memory_sampler.stop()
-        duration_seconds = max(time.perf_counter() - start_perf, 0.0)
+        processing_and_validation_duration_seconds = max(
+            time.perf_counter() - processing_started,
+            0.0,
+        )
 
         stats = writer.stats()
+        total_duration_seconds = max(time.perf_counter() - total_started, 0.0)
         manifest = {
             "manifest_version": "1.0.0",
             "dataset_id": dataset_id,
@@ -500,6 +590,7 @@ def run_ingestion(
                 "position_normalization_version": config.position_normalization_version,
                 "board_encoding_version": config.board_encoding_version,
                 "action_encoding_version": config.action_encoding_version,
+                "ingestion_pipeline_version": INGESTION_PIPELINE_VERSION,
                 "player_hmac_key_id": player_hmac_key_id,
             },
             "counts": {
@@ -521,12 +612,29 @@ def run_ingestion(
             },
             "total_output_bytes": writer.total_output_bytes,
             "performance": {
-                "duration_seconds": round(duration_seconds, 6),
-                "games_per_second": round(scanned_games / duration_seconds, 4)
-                if duration_seconds > 0
+                "checksum_duration_seconds": round(checksum_duration_seconds, 6),
+                "processing_and_validation_duration_seconds": round(
+                    processing_and_validation_duration_seconds,
+                    6,
+                ),
+                "total_duration_seconds": round(total_duration_seconds, 6),
+                "processing_games_per_second": round(
+                    scanned_games / processing_and_validation_duration_seconds,
+                    4,
+                )
+                if processing_and_validation_duration_seconds > 0
                 else 0.0,
-                "moves_per_second": round(emitted_moves / duration_seconds, 4)
-                if duration_seconds > 0
+                "processing_moves_per_second": round(
+                    emitted_moves / processing_and_validation_duration_seconds,
+                    4,
+                )
+                if processing_and_validation_duration_seconds > 0
+                else 0.0,
+                "total_games_per_second": round(scanned_games / total_duration_seconds, 4)
+                if total_duration_seconds > 0
+                else 0.0,
+                "total_moves_per_second": round(emitted_moves / total_duration_seconds, 4)
+                if total_duration_seconds > 0
                 else 0.0,
                 "peak_rss_bytes": peak_rss_bytes,
             },
@@ -561,13 +669,16 @@ def run_ingestion(
             rejected_games=rejected_games,
             emitted_moves=emitted_moves,
             error_records=rejected_games,
-            duration_seconds=duration_seconds,
+            checksum_duration_seconds=checksum_duration_seconds,
+            processing_and_validation_duration_seconds=processing_and_validation_duration_seconds,
+            total_duration_seconds=total_duration_seconds,
             peak_rss_bytes=peak_rss_bytes,
             part_counts={name: dataset_stats.part_count for name, dataset_stats in stats.items()},
             duckdb_validation_result="passed",
         )
     except Exception as exc:
         peak_rss_bytes = memory_sampler.stop()
+        failed_total_duration_seconds = max(time.perf_counter() - total_started, 0.0)
         failed_manifest = {
             "manifest_version": "1.0.0",
             "dataset_id": dataset_id,
@@ -589,7 +700,12 @@ def run_ingestion(
                 "emitted_moves": emitted_moves,
             },
             "performance": {
-                "duration_seconds": round(max(time.perf_counter() - start_perf, 0.0), 6),
+                "checksum_duration_seconds": round(checksum_duration_seconds, 6),
+                "processing_and_validation_duration_seconds": round(
+                    max(time.perf_counter() - processing_started, 0.0),
+                    6,
+                ),
+                "total_duration_seconds": round(failed_total_duration_seconds, 6),
                 "peak_rss_bytes": peak_rss_bytes,
             },
         }
@@ -635,7 +751,12 @@ def main() -> None:
                 f"emitted_moves={result.emitted_moves}",
                 f"error_records={result.error_records}",
                 f"part_counts={result.part_counts}",
-                f"duration_seconds={result.duration_seconds:.4f}",
+                f"checksum_duration_seconds={result.checksum_duration_seconds:.4f}",
+                (
+                    "processing_and_validation_duration_seconds="
+                    f"{result.processing_and_validation_duration_seconds:.4f}"
+                ),
+                f"total_duration_seconds={result.total_duration_seconds:.4f}",
                 f"peak_rss_bytes={result.peak_rss_bytes}",
                 f"duckdb_validation={result.duckdb_validation_result}",
                 f"manifest={result.manifest_path.as_posix()}",

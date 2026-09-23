@@ -14,6 +14,12 @@ with Hive-style partitioning by `source_month`.
 
 `PositionRecord` remains a logical contract, but this phase intentionally does not publish a physical bronze `positions` table. Global deduplication of positions is deferred to Phase 1.2b dbt SQL (`int_positions`) so deduplication is global, not only game-local or batch-local.
 
+Reproducibility semantics:
+
+- `dataset_id` identifies a logical transformation identity, not guaranteed byte-for-byte file identity.
+- `run_id` identifies a single execution attempt.
+- Repeated runs may reuse one completed `dataset_id` while producing distinct `run_id` values.
+
 ## Contract Principles
 
 - Every model has explicit grain.
@@ -173,6 +179,10 @@ Primary key:
 | run_id | string | no | run context | ingestion run identifier | non-empty | metadata |
 | schema_version | string | no | constant | schema version | equals active schema | metadata |
 
+Run provenance note:
+
+- `run_id` ties each ingestion error row to one concrete execution attempt.
+
 ## RunManifest
 
 Grain:
@@ -203,6 +213,15 @@ Primary key:
 | python_version | string | no | runtime | runtime version | non-empty | metadata |
 | package_versions | map<string,string> | no | runtime | package snapshot | key/value map | metadata |
 
+Phase 1.2a manifest extensions:
+
+- `versions.ingestion_pipeline_version` (e.g. `parquet_etl_v1`), incremented when output-affecting ingestion logic changes without an Arrow schema change.
+- Explicit timing fields in `performance`:
+	- `checksum_duration_seconds`
+	- `processing_and_validation_duration_seconds`
+	- `total_duration_seconds`
+- Throughput fields with explicit names (`processing_*` and `total_*`) to avoid ambiguous timing claims.
+
 ## Explicit Prohibited Features in This Phase
 
 - final game result as input for move prediction rows;
@@ -227,6 +246,7 @@ data/processed/
 Operational guarantees:
 
 - `dataset_id` is deterministic for a fixed source checksum + effective config.
+- `dataset_id` reflects logical transformation identity; Parquet files are not promised to be byte-identical across all machines/tool versions.
 - Part filenames are deterministic within a dataset (`part-000000`, `part-000001`, ...).
 - Publication occurs only after staged DuckDB + schema validation passes.
 - Re-running the same effective config reuses an existing completed dataset rather than appending duplicates.
