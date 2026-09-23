@@ -252,3 +252,19 @@ Generated ETL outputs are intentionally ignored:
 - raw archives in `data/raw/`
 
 This keeps repository history small, reviewable, and CI-safe.
+
+## 17. Handoff Into Phase 1.2b
+
+Phase 1.2a outputs are intentionally shaped for direct warehouse consumption in Phase 1.2b:
+
+- bronze datasets remain parquet (`games`, `moves`, `ingestion_errors`);
+- `_manifest.json` carries counts and identity metadata used by warehouse preflight;
+- deterministic `dataset_id` paths let dbt consume immutable published roots.
+
+The Phase 1.2b workflow starts by setting `CHESSLENS_DATASET_ROOT`, running:
+
+```powershell
+python -m uv run python -m chesslens.warehouse.preflight
+```
+
+Then running dbt (`debug`, `compile`, `build`) against the registered DuckDB bronze views.

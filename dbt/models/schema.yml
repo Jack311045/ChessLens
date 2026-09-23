@@ -1,0 +1,135 @@
+version: 2
+
+models:
+  - name: stg_games
+    description: >
+      One row per accepted game from the published bronze parquet dataset.
+      Grain: game_id.
+    columns:
+      - name: game_id
+        description: Stable game identifier derived in Phase 1.2a.
+        tests:
+          - not_null
+          - unique
+      - name: source_month
+        tests:
+          - not_null
+      - name: result
+        description: Complete-game result label from PGN headers.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['1-0', '0-1', '1/2-1/2']
+      - name: ply_count
+        tests:
+          - not_null
+
+  - name: stg_moves
+    description: >
+      One row per emitted move from the published bronze parquet dataset.
+      Grain: (game_id, ply).
+    columns:
+      - name: game_id
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_games')
+                field: game_id
+      - name: ply
+        tests:
+          - not_null
+      - name: position_id
+        tests:
+          - not_null
+      - name: side_to_move
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['w', 'b']
+
+  - name: stg_ingestion_errors
+    description: >
+      One row per ingestion error emitted by the tolerant parser path.
+      Fixture and full 2013 published datasets are expected to have zero rows.
+
+  - name: stg_manifest
+    description: >
+      Flattened manifest metadata for the currently selected published dataset root.
+      Grain: one row per dataset_id.
+    columns:
+      - name: dataset_id
+        tests:
+          - not_null
+          - unique
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['complete']
+
+  - name: int_positions
+    description: >
+      Global position dimension keyed by position_id, deduplicated across all games.
+      Includes occurrence counts and first/last source month observations.
+      Grain: position_id.
+    columns:
+      - name: position_id
+        tests:
+          - not_null
+          - unique
+      - name: normalized_fen
+        tests:
+          - not_null
+      - name: occurrence_count
+        tests:
+          - not_null
+
+  - name: int_move_context
+    description: >
+      Move-level context join of move records and game-level metadata.
+      Grain: (game_id, ply).
+    columns:
+      - name: game_id
+        tests:
+          - not_null
+      - name: ply
+        tests:
+          - not_null
+
+  - name: fct_move_events
+    description: >
+      Move-event fact table at move grain with chess metadata and explicit outcome labels.
+      Grain: (game_id, ply).
+    columns:
+      - name: game_id
+        tests:
+          - not_null
+      - name: ply
+        tests:
+          - not_null
+      - name: final_result_label
+        description: >
+          Post-game outcome label. Do not use for move prediction features.
+      - name: termination_label
+        description: >
+          Post-game termination label. Do not use for move prediction features.
+
+  - name: mart_policy_examples
+    description: >
+      Leakage-aware policy-training mart with one row per move and a move target.
+      Grain: (game_id, ply).
+    columns:
+      - name: game_id
+        tests:
+          - not_null
+      - name: ply
+        tests:
+          - not_null
+      - name: played_move_uci
+        description: Supervised target move.
+        tests:
+          - not_null

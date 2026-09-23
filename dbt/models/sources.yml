@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: >
+      Bronze layer views over published Phase 1.2a parquet datasets. These views are
+      registered by the preflight step in `python -m chesslens.warehouse.preflight`.
+    schema: main
+    tables:
+      - name: bronze_games
+        description: Raw game-level records from the published ingestion dataset.
+      - name: bronze_moves
+        description: Raw move-level records from the published ingestion dataset.
+      - name: bronze_ingestion_errors
+        description: Raw ingestion errors from the published ingestion dataset.
+      - name: bronze_manifest
+        description: Parsed `_manifest.json` metadata for the published ingestion dataset.

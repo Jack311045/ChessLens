@@ -91,7 +91,7 @@ Pipeline used by ingestion:
 1. open compressed file as binary stream;
 2. wrap with `zstandard.ZstdDecompressor().stream_reader(...)`;
 3. wrap decompressed bytes with `io.TextIOWrapper` for text decoding;
-4. call `chess.pgn.read_game()` repeatedly to parse one game at a time.
+4. call `chess.pgn.read._game()` repeatedly to parse one game at a time.
 
 Key point: this reads incrementally. It does not load entire decompressed archive into RAM.
 
