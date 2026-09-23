@@ -271,3 +271,67 @@ Alternatives considered:
 
 Why not chosen:
 - Hidden policy switching is brittle and unsafe.
+
+## ADR-015: dataset identity is logical and pipeline-versioned
+
+Context:
+- Output-affecting ingestion logic can change without Arrow schema changes.
+- Git commits include documentation/test-only changes that must not force new dataset IDs.
+
+Decision:
+- Add `INGESTION_PIPELINE_VERSION` (currently `parquet_etl_v1`).
+- Include pipeline version in effective config, configuration hash inputs, and dataset ID derivation.
+- Keep `git_commit` in manifest for auditability but exclude it from dataset identity.
+
+Consequences:
+- Logical transformation changes can intentionally force new dataset IDs.
+- Non-output changes (e.g., docs-only commits) do not perturb dataset identity.
+- Reproducibility claims remain about logical transformation identity, not guaranteed byte-for-byte file equality.
+
+Alternatives considered:
+- Include Git commit in dataset ID.
+
+Why not chosen:
+- Over-couples identity to repository activity unrelated to output bytes or logic.
+
+## ADR-016: strict manifest identity checks before dataset reuse
+
+Context:
+- Reusing an existing dataset path is safe only if manifest identity fields match the current execution intent.
+
+Decision:
+- Before reuse, require identity agreement on completion status, dataset ID, configuration hash, source SHA/month, pipeline version, schema/encoding versions, and player key ID.
+- Missing or inconsistent identity fields fail reuse loudly.
+- Run schema + DuckDB validation only after identity checks pass.
+
+Consequences:
+- Prevents accidental reuse of stale/tampered datasets.
+- Preserves idempotency without silent corruption or identity drift.
+
+Alternatives considered:
+- Reuse based only on final dataset path and completion status.
+
+Why not chosen:
+- Path-only checks are insufficient against tampered or incompatible manifests.
+
+## ADR-017: explicit timing boundaries and throughput semantics
+
+Context:
+- Single-duration metrics are ambiguous when checksum cost is mixed with processing and validation.
+
+Decision:
+- Record separate durations:
+	- `checksum_duration_seconds`
+	- `processing_and_validation_duration_seconds`
+	- `total_duration_seconds`
+- Publish separate throughput metrics for processing and total time.
+
+Consequences:
+- Performance reporting is honest and interpretable.
+- End-to-end throughput and processing-only throughput are distinguishable.
+
+Alternatives considered:
+- Keep a single `duration_seconds` and one throughput value.
+
+Why not chosen:
+- Conflates phases and can mislead comparisons.

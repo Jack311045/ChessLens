@@ -125,3 +125,173 @@ def test_batch_limits_must_be_positive(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="batch_games"):
         load_ingestion_config(config_path)
+
+
+def test_source_month_matches_inferable_filename(tmp_path: Path) -> None:
+    archive_path = tmp_path / "lichess_db_standard_rated_2013-01.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "month-match.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "source_month: 2013-01",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = load_ingestion_config(config_path)
+    assert config.source_month == "2013-01"
+
+
+def test_source_month_mismatch_with_filename_rejected(tmp_path: Path) -> None:
+    archive_path = tmp_path / "lichess_db_standard_rated_2013-01.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "month-mismatch.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "source_month: 2014-01",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="does not match archive filename month"):
+        load_ingestion_config(config_path)
+
+
+def test_source_month_must_be_real_calendar_month(tmp_path: Path) -> None:
+    archive_path = tmp_path / "sample_archive.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "invalid-month.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "source_month: 2013-99",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="real calendar month"):
+        load_ingestion_config(config_path)
+
+
+def test_inferable_filename_month_must_be_real_calendar_month(tmp_path: Path) -> None:
+    archive_path = tmp_path / "lichess_db_standard_rated_2013-99.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "invalid-month-name.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="source month inferred from archive filename"):
+        load_ingestion_config(config_path)
+
+
+def test_non_inferable_filename_allowed_with_explicit_source_month(tmp_path: Path) -> None:
+    archive_path = tmp_path / "custom_source_archive.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "non-inferable-name.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "source_month: 2013-01",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = load_ingestion_config(config_path)
+    assert config.source_month == "2013-01"
+
+
+def test_unsupported_schema_version_rejected(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "bad-schema-version.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "schema_version: 9.9.9",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Unsupported schema_version"):
+        load_ingestion_config(config_path)
+
+
+def test_unsupported_position_normalization_version_rejected(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "bad-position-version.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "position_normalization_version: fen4_v999",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Unsupported position_normalization_version"):
+        load_ingestion_config(config_path)
+
+
+def test_unsupported_board_encoding_version_rejected(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "bad-board-version.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "board_encoding_version: board_legacy",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Unsupported board_encoding_version"):
+        load_ingestion_config(config_path)
+
+
+def test_unsupported_action_encoding_version_rejected(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "bad-action-version.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "action_encoding_version: action_legacy",
+                "max_games: 1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Unsupported action_encoding_version"):
+        load_ingestion_config(config_path)

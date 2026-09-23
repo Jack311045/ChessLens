@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -22,6 +23,7 @@ PlayerHashMode = Literal["fixture_placeholder", "hmac_sha256"]
 _ALLOWED_HASH_MODES: set[str] = {"fixture_placeholder", "hmac_sha256"}
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _SOURCE_MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
+_SOURCE_MONTH_IN_NAME_RE = re.compile(r"(\d{4}-\d{2})")
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,37 @@ def _as_optional_string(value: Any) -> str | None:
     return text
 
 
+def _validate_calendar_month(value: str, *, field_name: str) -> str:
+    if not _SOURCE_MONTH_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be in YYYY-MM format")
+    try:
+        datetime.strptime(value, "%Y-%m")
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a real calendar month in YYYY-MM format") from exc
+    return value
+
+
+def _infer_source_month_from_name(filename: str) -> str | None:
+    match = _SOURCE_MONTH_IN_NAME_RE.search(filename)
+    if match is None:
+        return None
+    return match.group(1)
+
+
+def _validate_supported_version(
+    *,
+    field_name: str,
+    configured: str,
+    supported: str,
+) -> str:
+    if configured != supported:
+        raise ValueError(
+            f"Unsupported {field_name}: {configured!r}. "
+            f"Currently supported value is {supported!r}."
+        )
+    return configured
+
+
 def _load_yaml_dict(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Config file does not exist: {path}")
@@ -123,6 +156,8 @@ def load_ingestion_config(
 
     if "input_path" not in raw:
         raise ValueError("Config must include input_path")
+
+    input_path = _resolve_path(str(raw["input_path"])) or Path("")
 
     max_games = _as_optional_non_negative_int(raw.get("max_games", 100), field_name="max_games")
     strict = _as_bool(raw.get("strict", False))
@@ -165,11 +200,44 @@ def load_ingestion_config(
             raise ValueError("expected_source_sha256 must be a 64-character lowercase hex string")
 
     source_month = _as_optional_string(raw.get("source_month"))
-    if source_month is not None and not _SOURCE_MONTH_RE.fullmatch(source_month):
-        raise ValueError("source_month must be in YYYY-MM format")
+    if source_month is not None:
+        source_month = _validate_calendar_month(source_month, field_name="source_month")
+
+    inferred_source_month = _infer_source_month_from_name(input_path.name)
+    if inferred_source_month is not None:
+        inferred_source_month = _validate_calendar_month(
+            inferred_source_month,
+            field_name="source month inferred from archive filename",
+        )
+        if source_month is not None and source_month != inferred_source_month:
+            raise ValueError(
+                "Configured source_month does not match archive filename month: "
+                f"{source_month!r} != {inferred_source_month!r}"
+            )
+
+    schema_version = _validate_supported_version(
+        field_name="schema_version",
+        configured=str(raw.get("schema_version", SCHEMA_VERSION)),
+        supported=SCHEMA_VERSION,
+    )
+    position_normalization_version = _validate_supported_version(
+        field_name="position_normalization_version",
+        configured=str(raw.get("position_normalization_version", POSITION_NORMALIZATION_VERSION)),
+        supported=POSITION_NORMALIZATION_VERSION,
+    )
+    board_encoding_version = _validate_supported_version(
+        field_name="board_encoding_version",
+        configured=str(raw.get("board_encoding_version", BOARD_ENCODING_VERSION)),
+        supported=BOARD_ENCODING_VERSION,
+    )
+    action_encoding_version = _validate_supported_version(
+        field_name="action_encoding_version",
+        configured=str(raw.get("action_encoding_version", ACTION_ENCODING_VERSION)),
+        supported=ACTION_ENCODING_VERSION,
+    )
 
     config = IngestionConfig(
-        input_path=_resolve_path(str(raw["input_path"])) or Path(""),
+        input_path=input_path,
         output_root=_resolve_path(str(raw.get("output_root", "data/processed"))) or Path(""),
         expected_source_sha256=expected_source_sha256,
         max_games=max_games,
@@ -187,12 +255,10 @@ def load_ingestion_config(
         fixture_output_zst=_resolve_path(raw.get("fixture_output_zst")),
         fixture_manifest_path=_resolve_path(raw.get("fixture_manifest_path")),
         profile_output_path=_resolve_path(raw.get("profile_output_path")),
-        schema_version=str(raw.get("schema_version", SCHEMA_VERSION)),
-        position_normalization_version=str(
-            raw.get("position_normalization_version", POSITION_NORMALIZATION_VERSION)
-        ),
-        board_encoding_version=str(raw.get("board_encoding_version", BOARD_ENCODING_VERSION)),
-        action_encoding_version=str(raw.get("action_encoding_version", ACTION_ENCODING_VERSION)),
+        schema_version=schema_version,
+        position_normalization_version=position_normalization_version,
+        board_encoding_version=board_encoding_version,
+        action_encoding_version=action_encoding_version,
     )
 
     if config.max_games == 0:

@@ -31,6 +31,7 @@ Implemented now:
 - bounded sample profiling output at `reports/sample_profile.json`;
 - batch-based Parquet output for bronze `games`, `moves`, and `ingestion_errors` datasets;
 - deterministic `dataset_id` derived from source checksum and effective config;
+- explicit ingestion pipeline version (`parquet_etl_v1`) included in dataset identity;
 - optional source checksum verification (`expected_source_sha256`);
 - staged write + validation + publish workflow for idempotent dataset publication;
 - optional HMAC-based player anonymization mode for real archives.
@@ -53,6 +54,12 @@ Current flow in this phase:
 5. Validate relational and schema invariants with DuckDB SQL.
 6. Publish completed datasets by renaming validated staging output into deterministic dataset paths.
 7. Emit run manifest metrics for reproducibility and benchmarking.
+
+Reproducibility semantics:
+
+- `dataset_id` identifies a logical transformation identity (source checksum + effective config + supported versions + pipeline version + key ID), not guaranteed byte-for-byte file identity across environments.
+- `run_id` identifies one execution attempt and is always unique.
+- `ingestion_errors` include run-level provenance (`run_id`) to trace which attempt observed each rejection.
 
 ## Repository Layout
 
@@ -124,6 +131,13 @@ Real-data configs require environment variables for HMAC mode:
 
 Never commit HMAC secrets to Git.
 
+HMAC key-ID policy:
+
+- one key ID must map to one stable secret;
+- rotating or changing the secret requires a new key ID;
+- never reuse one key ID for different secrets;
+- key IDs may be written to manifests, but secrets must never appear in YAML, Git, manifests, logs, or tests.
+
 ## Phase 1.2a Output Layout
 
 Completed datasets are published under `data/processed/datasets/<dataset_id>/`.
@@ -149,10 +163,21 @@ data/processed/
 During execution, data is written first to `data/processed/staging/<dataset_id>__<run_id>/`.
 Only validated datasets with completed manifests are published into `datasets/`.
 
+Preflight config guards:
+
+- if `source_month` is configured and the archive filename includes `YYYY-MM`, they must match;
+- source months must be real calendar months;
+- schema/encoding version fields must match currently supported code constants.
+
 Design note:
 
 - This phase intentionally publishes only bronze `games`, `moves`, and `ingestion_errors`.
 - A globally deduplicated positions table is deferred to Phase 1.2b dbt SQL so it is truly global, not only game-local or batch-local.
+
+Timing metrics note:
+
+- manifests store `checksum_duration_seconds`, `processing_and_validation_duration_seconds`, and `total_duration_seconds` separately;
+- throughput metrics are reported with explicit `processing_*` and `total_*` names to avoid ambiguity.
 
 ## Fixture Generation
 

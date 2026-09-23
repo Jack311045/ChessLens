@@ -8,6 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 import zstandard
 
+from chesslens.domain.records import INGESTION_PIPELINE_VERSION
 from chesslens.ingestion.pgn_reader import compute_sha256
 from chesslens.ingestion.run_ingestion import StrictModeIngestionError, run_ingestion
 from chesslens.validation.schemas import (
@@ -44,6 +45,30 @@ def _load_manifest(path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], payload)
 
 
+def _set_nested(mapping: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
+    current: dict[str, Any] = mapping
+    for key in path[:-1]:
+        child = current[key]
+        if not isinstance(child, dict):
+            raise TypeError(f"Expected nested dict at {key!r}")
+        current = child
+    current[path[-1]] = value
+
+
+def _delete_nested(mapping: dict[str, Any], path: tuple[str, ...]) -> None:
+    current: dict[str, Any] = mapping
+    for key in path[:-1]:
+        child = current[key]
+        if not isinstance(child, dict):
+            raise TypeError(f"Expected nested dict at {key!r}")
+        current = child
+    del current[path[-1]]
+
+
+def _save_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+
 def test_fixture_ingestion_writes_partitioned_parquet_and_manifest(tmp_path: Path) -> None:
     result = run_ingestion(config_path=FIXTURE_CONFIG, overrides=_base_overrides(tmp_path))
     manifest = _load_manifest(result.manifest_path)
@@ -55,6 +80,7 @@ def test_fixture_ingestion_writes_partitioned_parquet_and_manifest(tmp_path: Pat
     assert manifest["counts"]["rejected_games"] == 0
     assert manifest["counts"]["error_records"] == 0
     assert manifest["source"]["archive_sha256"] == FIXTURE_SHA256
+    assert manifest["versions"]["ingestion_pipeline_version"] == INGESTION_PIPELINE_VERSION
 
     games_files = list(
         (result.dataset_path / "games" / "source_month=2013-01").glob("part-*.parquet")
@@ -172,6 +198,69 @@ def test_repeated_identical_run_reuses_existing_dataset(tmp_path: Path) -> None:
     assert first.dataset_path == second.dataset_path
 
 
+@pytest.mark.parametrize(
+    ("field_path", "tampered_value"),
+    [
+        (("dataset_id",), "tampered-dataset-id"),
+        (("configuration_hash",), "tampered-configuration-hash"),
+        (("source", "archive_sha256"), "f" * 64),
+        (("source", "source_month"), "2099-01"),
+        (("versions", "ingestion_pipeline_version"), "parquet_etl_old"),
+        (("versions", "schema_version"), "9.9.9"),
+        (("versions", "position_normalization_version"), "bad_position_version"),
+        (("versions", "board_encoding_version"), "bad_board_version"),
+        (("versions", "action_encoding_version"), "bad_action_version"),
+        (("versions", "player_hmac_key_id"), "different-key-id"),
+        (("status",), "failed"),
+    ],
+)
+def test_reuse_rejected_when_manifest_identity_field_tampered(
+    tmp_path: Path,
+    field_path: tuple[str, ...],
+    tampered_value: Any,
+) -> None:
+    overrides = _base_overrides(tmp_path)
+    first = run_ingestion(config_path=FIXTURE_CONFIG, overrides=overrides)
+
+    manifest = _load_manifest(first.manifest_path)
+    _set_nested(manifest, field_path, tampered_value)
+    _save_manifest(first.manifest_path, manifest)
+
+    with pytest.raises(RuntimeError, match="identity"):
+        run_ingestion(config_path=FIXTURE_CONFIG, overrides=overrides)
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    [
+        ("dataset_id",),
+        ("configuration_hash",),
+        ("source", "archive_sha256"),
+        ("source", "source_month"),
+        ("versions", "ingestion_pipeline_version"),
+        ("versions", "schema_version"),
+        ("versions", "position_normalization_version"),
+        ("versions", "board_encoding_version"),
+        ("versions", "action_encoding_version"),
+        ("versions", "player_hmac_key_id"),
+        ("status",),
+    ],
+)
+def test_reuse_rejected_when_manifest_identity_field_missing(
+    tmp_path: Path,
+    field_path: tuple[str, ...],
+) -> None:
+    overrides = _base_overrides(tmp_path)
+    first = run_ingestion(config_path=FIXTURE_CONFIG, overrides=overrides)
+
+    manifest = _load_manifest(first.manifest_path)
+    _delete_nested(manifest, field_path)
+    _save_manifest(first.manifest_path, manifest)
+
+    with pytest.raises(RuntimeError, match="missing identity field"):
+        run_ingestion(config_path=FIXTURE_CONFIG, overrides=overrides)
+
+
 def test_output_affecting_config_change_updates_dataset_id(tmp_path: Path) -> None:
     overrides_a = _base_overrides(tmp_path)
     overrides_b = _base_overrides(tmp_path)
@@ -286,6 +375,22 @@ def test_empty_input_with_zero_limit(tmp_path: Path) -> None:
     assert manifest["counts"]["accepted_games"] == 0
     assert manifest["counts"]["rejected_games"] == 0
     assert manifest["counts"]["emitted_moves"] == 0
+
+
+def test_manifest_records_honest_duration_fields(tmp_path: Path) -> None:
+    result = run_ingestion(config_path=FIXTURE_CONFIG, overrides=_base_overrides(tmp_path))
+    manifest = _load_manifest(result.manifest_path)
+    performance = manifest["performance"]
+
+    checksum_duration = float(performance["checksum_duration_seconds"])
+    processing_duration = float(performance["processing_and_validation_duration_seconds"])
+    total_duration = float(performance["total_duration_seconds"])
+
+    assert checksum_duration >= 0.0
+    assert processing_duration >= 0.0
+    assert total_duration >= 0.0
+    assert total_duration >= checksum_duration
+    assert total_duration >= processing_duration
 
 
 def test_truncated_zstd_is_fatal_archive_error(tmp_path: Path) -> None:
