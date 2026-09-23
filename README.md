@@ -6,6 +6,7 @@ This repository currently implements:
 
 - Phase 0 foundation: reproducible environment, package layout, tests, CI, and architecture decisions.
 - Phase 1.1 contracts: versioned game/move/position/eval/error/manifest schemas.
+- Phase 1.2a ingestion: bounded-memory batch ETL to schema-controlled partitioned Parquet with safe publication, reproducibility manifests, and DuckDB validation.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 This repository does not yet implement the full 10M-game ETL, model training, deployment, or performance claims.
@@ -27,11 +28,15 @@ Implemented now:
 - `18 x 8 x 8` board encoding and fixed `8 x 8 x 73` action encoding;
 - streaming `.pgn.zst` parsing with strict/tolerant behavior;
 - sanitized tiny fixture generation (`20` games default);
-- bounded sample profiling output at `reports/sample_profile.json`.
+- bounded sample profiling output at `reports/sample_profile.json`;
+- batch-based Parquet output for bronze `games`, `moves`, and `ingestion_errors` datasets;
+- deterministic `dataset_id` derived from source checksum and effective config;
+- optional source checksum verification (`expected_source_sha256`);
+- staged write + validation + publish workflow for idempotent dataset publication;
+- optional HMAC-based player anonymization mode for real archives.
 
 Deferred on purpose:
 
-- full-scale Parquet partition writer for monthly archives;
 - Airflow DAG execution;
 - dbt SQL transformations beyond skeleton;
 - LightGBM/PyTorch/Optuna/MLflow training workflows;
@@ -44,8 +49,10 @@ Current flow in this phase:
 1. Stream compressed PGN from `data/raw/*.pgn.zst`.
 2. Parse one game at a time with `python-chess`.
 3. Validate legal pre-move states and derive versioned IDs.
-4. Emit typed records and profile statistics.
-5. Generate a tiny sanitized `.pgn.zst` fixture for deterministic tests and CI.
+4. Buffer only bounded batches of records and write partitioned Parquet parts.
+5. Validate relational and schema invariants with DuckDB SQL.
+6. Publish completed datasets by renaming validated staging output into deterministic dataset paths.
+7. Emit run manifest metrics for reproducibility and benchmarking.
 
 ## Repository Layout
 
@@ -91,6 +98,8 @@ Make targets:
 - `make setup`
 - `make fixture`
 - `make inspect-sample`
+- `make ingest-fixture`
+- `make ingest-2013-sample`
 - `make test`
 - `make lint`
 - `make typecheck`
@@ -100,11 +109,50 @@ Windows direct equivalents:
 - `python -m uv sync --dev`
 - `python -m uv run python scripts/create_fixture.py --config configs/ingestion/fixture.yaml`
 - `python -m uv run python -m chesslens.ingestion.sample_profiler --config configs/ingestion/smoke.yaml`
+- `python -m uv run python -m chesslens.ingestion.run_ingestion --config configs/ingestion/fixture_etl.yaml`
+- `python -m uv run python -m chesslens.ingestion.run_ingestion --config configs/ingestion/2013_01_sample.yaml`
 - `python -m uv run pytest -q`
 - `python -m uv run ruff check .`
 - `python -m uv run mypy src tests scripts`
 
 All commands are expected to run from repository root.
+
+Real-data configs require environment variables for HMAC mode:
+
+- `CHESSLENS_PLAYER_HMAC_KEY`
+- `CHESSLENS_PLAYER_HMAC_KEY_ID`
+
+Never commit HMAC secrets to Git.
+
+## Phase 1.2a Output Layout
+
+Completed datasets are published under `data/processed/datasets/<dataset_id>/`.
+
+Example layout:
+
+```text
+data/processed/
+	datasets/
+		<dataset_id>/
+			games/
+				source_month=2013-01/
+					part-000000.parquet
+			moves/
+				source_month=2013-01/
+					part-000000.parquet
+			ingestion_errors/
+				source_month=2013-01/
+					part-000000.parquet
+			_manifest.json
+```
+
+During execution, data is written first to `data/processed/staging/<dataset_id>__<run_id>/`.
+Only validated datasets with completed manifests are published into `datasets/`.
+
+Design note:
+
+- This phase intentionally publishes only bronze `games`, `moves`, and `ingestion_errors`.
+- A globally deduplicated positions table is deferred to Phase 1.2b dbt SQL so it is truly global, not only game-local or batch-local.
 
 ## Fixture Generation
 

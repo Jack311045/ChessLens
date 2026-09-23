@@ -1,8 +1,18 @@
-# Data Contract (Phase 1.1)
+# Data Contract (Phase 1.2a)
 
 Schema version: `1.1.0`.
 
-This document defines logical contracts and semantics for the first ingestion phase. Physical partitioning and dbt transformation layers are intentionally deferred.
+This document defines logical contracts and semantics for ingestion.
+
+Phase 1.2a publishes bronze Parquet datasets for:
+
+- `games`
+- `moves`
+- `ingestion_errors`
+
+with Hive-style partitioning by `source_month`.
+
+`PositionRecord` remains a logical contract, but this phase intentionally does not publish a physical bronze `positions` table. Global deduplication of positions is deferred to Phase 1.2b dbt SQL (`int_positions`) so deduplication is global, not only game-local or batch-local.
 
 ## Contract Principles
 
@@ -199,3 +209,24 @@ Primary key:
 - termination reason as input feature;
 - post-move clock annotations as pre-move feature;
 - future opening labels at early plies when they embed future moves.
+
+## Physical Bronze Layout (Phase 1.2a)
+
+Published datasets use deterministic paths:
+
+```text
+data/processed/
+	datasets/
+		<dataset_id>/
+			games/source_month=YYYY-MM/part-000000.parquet
+			moves/source_month=YYYY-MM/part-000000.parquet
+			ingestion_errors/source_month=YYYY-MM/part-000000.parquet
+			_manifest.json
+```
+
+Operational guarantees:
+
+- `dataset_id` is deterministic for a fixed source checksum + effective config.
+- Part filenames are deterministic within a dataset (`part-000000`, `part-000001`, ...).
+- Publication occurs only after staged DuckDB + schema validation passes.
+- Re-running the same effective config reuses an existing completed dataset rather than appending duplicates.

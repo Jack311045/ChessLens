@@ -208,3 +208,66 @@ Alternatives considered:
 
 Why not chosen:
 - Creates misleading project evidence and maintenance burden.
+
+## ADR-012: publish only bronze games/moves/errors in Phase 1.2a
+
+Context:
+- We need stable physical Parquet outputs now, but globally deduplicated positions require SQL-level global deduplication logic.
+
+Decision:
+- Publish only `games`, `moves`, and `ingestion_errors` as bronze datasets in Phase 1.2a.
+- Defer globally deduplicated `int_positions` to Phase 1.2b dbt models built from bronze `moves`.
+
+Consequences:
+- Physical outputs remain truthful about grain and deduplication scope.
+- Phase 1.2b can implement and test true global deduplication in SQL.
+
+Alternatives considered:
+- Publish a Phase 1.2a `positions` table deduplicated only inside games or batches.
+
+Why not chosen:
+- It would imply global uniqueness that is not actually guaranteed.
+
+## ADR-013: stage-validate-publish for safe idempotent datasets
+
+Context:
+- A failed ingestion run must never look like a complete dataset to downstream readers.
+
+Decision:
+- Write to a unique staging path first.
+- Validate row counts, keys, contiguity, foreign keys, partition values, and schemas.
+- Write complete manifest only after validation passes.
+- Publish by renaming staging dataset into deterministic final dataset path.
+- Reuse an existing completed dataset with the same dataset_id after validating it.
+
+Consequences:
+- Failed runs do not modify completed datasets.
+- Repeated identical runs avoid duplicate writes.
+- Downstream readers can safely read only `datasets/<dataset_id>` outputs.
+
+Alternatives considered:
+- Write directly into final path and append parts as processing proceeds.
+
+Why not chosen:
+- Leaves partially written datasets visible and increases corruption risk.
+
+## ADR-014: explicit player hash modes with required HMAC env inputs
+
+Context:
+- Fixture data can use deterministic placeholders, but real archives require keyed anonymization.
+
+Decision:
+- Support explicit `player_hash_mode` values:
+	- `fixture_placeholder` for sanitized fixture workflows.
+	- `hmac_sha256` for real-data ingestion.
+- Require HMAC secret/key-id environment variables for HMAC mode and fail early if missing.
+
+Consequences:
+- Real-data ingestion enforces keyed anonymization policy.
+- Secrets are never serialized into manifests, dataset IDs, or paths.
+
+Alternatives considered:
+- Infer security mode from file names or environment heuristics.
+
+Why not chosen:
+- Hidden policy switching is brittle and unsafe.

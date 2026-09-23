@@ -1,0 +1,17 @@
+input_path: data/fixtures/lichess_2013_01_first20.pgn.zst
+output_root: data/processed
+expected_source_sha256: 47581f7f487a8ee84f91fc3608623865e72811dcc95511e8710482738502b3c6
+max_games: null
+strict: true
+require_complete_games: true
+batch_games: 5
+max_buffered_records: 500
+parquet_compression: zstd
+parquet_row_group_size: 256
+player_hash_mode: fixture_placeholder
+source_month: 2013-01
+
+schema_version: 1.1.0
+position_normalization_version: fen4_legal_ep_v1
+board_encoding_version: board18_abs_v1
+action_encoding_version: action8x8x73_v1
