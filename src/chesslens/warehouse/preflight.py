@@ -224,6 +224,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Published dataset root. Defaults to CHESSLENS_DATASET_ROOT.",
     )
     parser.add_argument(
+        "--collection-root",
+        default=None,
+        help=(
+            "Published collection root containing _collection_manifest.json. "
+            "Defaults to CHESSLENS_COLLECTION_ROOT. Overrides --dataset-root when set."
+        ),
+    )
+    parser.add_argument(
         "--duckdb-path",
         default=None,
         help=(
@@ -256,13 +264,6 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    dataset_root_raw = args.dataset_root if args.dataset_root is not None else _require_env(
-        "CHESSLENS_DATASET_ROOT"
-    )
-    dataset_root = Path(dataset_root_raw)
-
-    result = validate_published_dataset_root(dataset_root)
-
     duckdb_path = Path(
         args.duckdb_path
         or os.environ.get("CHESSLENS_DUCKDB_PATH", "data/tmp/chesslens_warehouse.duckdb")
@@ -272,6 +273,46 @@ def main() -> None:
         args.temp_directory
         or os.environ.get("CHESSLENS_DUCKDB_TEMP_DIR", "data/tmp/duckdb_temp")
     )
+
+    collection_root_raw = args.collection_root or os.environ.get("CHESSLENS_COLLECTION_ROOT")
+    if collection_root_raw:
+        from chesslens.warehouse.collection import (
+            register_collection_bronze_views,
+            validate_collection_root,
+        )
+
+        collection_root = Path(collection_root_raw)
+        if args.skip_register_views:
+            collection_result = validate_collection_root(collection_root)
+        else:
+            collection_result = register_collection_bronze_views(
+                collection_root=collection_root,
+                duckdb_path=duckdb_path,
+                memory_limit=memory_limit,
+                temp_directory=temp_directory,
+            )
+        summary = {
+            "input_kind": "collection",
+            "collection_root": collection_result.collection_root.resolve().as_posix(),
+            "manifest_path": collection_result.manifest_path.resolve().as_posix(),
+            "member_count": collection_result.member_count,
+            "counts": {
+                "accepted_games": collection_result.accepted_games,
+                "emitted_moves": collection_result.emitted_moves,
+                "error_records": collection_result.error_records,
+            },
+            "duckdb_path": duckdb_path.resolve().as_posix(),
+            "registered_bronze_views": not args.skip_register_views,
+        }
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return
+
+    dataset_root_raw = args.dataset_root if args.dataset_root is not None else _require_env(
+        "CHESSLENS_DATASET_ROOT"
+    )
+    dataset_root = Path(dataset_root_raw)
+
+    result = validate_published_dataset_root(dataset_root)
 
     if not args.skip_register_views:
         register_bronze_views(

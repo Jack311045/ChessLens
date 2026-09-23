@@ -355,3 +355,70 @@ Warehouse tests must assert that:
 - bronze and staging row counts match for all three bronze datasets;
 - manifest counts (`accepted_games`, `emitted_moves`, `error_records`) match staging row counts;
 - manifest dataset row-count entries match staging row counts.
+
+## Sharding and Collection Contracts (Phase 1.2c)
+
+### Global game identity invariant
+
+- `game_id = sha256(parent_archive_sha256 + "|" + global_source_game_index)`.
+- `source_game_index` remains the **global** index over the parent archive (unchanged
+  schema). It counts every raw game boundary, including tolerantly-rejected games.
+- A game has an identical `game_id` and `GameRecord` whether ingested directly from
+  the parent archive or from a shard with a non-zero global offset.
+
+### Dataset manifest addition: `source_lineage`
+
+Per-shard dataset manifests add an optional `source_lineage` object (null for direct
+ingestion):
+
+- `parent_archive_filename`, `parent_archive_sha256`: identity anchor for `game_id`.
+- `global_game_index_offset`: added to local index to form the global index.
+- `shard_index`, `shard_filename`, `shard_sha256`: physical shard lineage.
+
+The dataset manifest `source.archive_sha256` remains the **physical** shard SHA (used
+for dataset identity and reuse checks); the parent SHA lives in `source_lineage`.
+
+### Shard manifest (`_shard_manifest.json`)
+
+Grain: one manifest per sharding plan (per parent archive + month + shard size).
+
+Required fields: `manifest_version`, `splitter_pipeline_version`, `status`
+(`incomplete`/`complete`), parent archive filename/SHA-256/size, `source_month`,
+`expected_total_games`, `games_per_shard`, compression settings, timestamps,
+`total_emitted_games`, `total_shard_count`, performance (peak RSS, active seconds,
+games/second), and one entry per shard with: `shard_index`, `filename`,
+`start_global_index` (inclusive), `end_global_index` (exclusive), `game_count`,
+`compressed_bytes`, `sha256`, `status`.
+
+Range invariants (validated): indices `0..n-1` in order; first start `0`; each next
+start equals the previous end; no gaps or overlaps; final end equals
+`total_emitted_games`. Writes are atomic (temp file + `os.replace`). The logical
+identity hash excludes timestamps, byte sizes, and paths.
+
+### Collection manifest (`_collection_manifest.json`)
+
+Grain: one manifest per collection (per shard plan + ingestion identity).
+
+Required fields: `manifest_version`, `collection_id`, `status`, parent
+filename/SHA-256, `source_month`, `shard_manifest_identity_hash`, `games_per_shard`,
+versions (sharding/ingestion pipeline, schema/encoding, non-secret `player_hmac_key_id`),
+`expected_raw_games`, `selected_shard_count`, `completed_shard_count`, aggregate
+`counts` (`scanned`/`accepted`/`rejected`/`emitted_moves`/`error_records`),
+`aggregate_output_bytes`, `timing` (active seconds, aggregate rates, peak RSS,
+started/updated timestamps), `portfolio_10m_satisfied`, and one entry per processed
+shard with its `dataset_id`, `dataset_relpath`, global range, counts, and per-shard
+performance.
+
+Reconciliation invariants (validated): shard-index contiguity; half-open global range
+contiguity; unique `dataset_id`s; aggregate counts equal the sum of per-shard counts;
+`portfolio_10m_satisfied` is `true` only when `status == complete` and
+`accepted_games >= 10,000,000`. Deep row-level uniqueness (global `game_id` and
+`(game_id, ply)`) is enforced by the collection dbt build over the manifest-listed
+union.
+
+### `collection_id` determinism
+
+`collection_id` is derived only from logical inputs — parent SHA-256, `source_month`,
+`shard_manifest_identity_hash`, `games_per_shard`, pipeline/schema/encoding versions,
+and the non-secret `player_hmac_key_id`. It never includes timestamps, secrets,
+absolute paths, or run ids.

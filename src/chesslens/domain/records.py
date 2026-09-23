@@ -11,6 +11,9 @@ POSITION_NORMALIZATION_VERSION = "fen4_legal_ep_v1"
 BOARD_ENCODING_VERSION = "board18_abs_v1"
 ACTION_ENCODING_VERSION = "action8x8x73_v1"
 INGESTION_PIPELINE_VERSION = "parquet_etl_v1"
+SHARDING_PIPELINE_VERSION = "pgn_shard_v1"
+SHARD_MANIFEST_VERSION = "1.0.0"
+COLLECTION_MANIFEST_VERSION = "1.0.0"
 
 SideToMove = Literal["w", "b"]
 HandlingDecision = Literal["rejected", "accepted_with_warning", "accepted"]

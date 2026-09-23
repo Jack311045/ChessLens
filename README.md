@@ -8,6 +8,7 @@ This repository currently implements:
 - Phase 1.1 contracts: versioned game/move/position/eval/error/manifest schemas.
 - Phase 1.2a ingestion: bounded-memory batch ETL to schema-controlled partitioned Parquet with safe publication, reproducibility manifests, and DuckDB validation.
 - Phase 1.2b warehouse: DuckDB/dbt source registration, staging/intermediate/marts, and data quality tests for training-safe marts.
+- Phase 1.2c sharding: streaming, resumable, game-boundary-aware sharding and multi-session collection ingestion with preserved global game identity.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 This repository does not yet implement the full 10M-game ETL, model training, deployment, or performance claims.
@@ -39,6 +40,9 @@ Implemented now:
 - preflight validation + DuckDB bronze view registration before dbt builds;
 - singular and generic dbt tests for keys, contiguity, manifest reconciliation, and leakage guards.
 - optional HMAC-based player anonymization mode for real archives.
+- streaming PGN-boundary sharding (`run_sharding`) with atomic `.partial` publication and a resumable shard manifest;
+- multi-session sharded ingestion (`run_sharded_ingestion`) that preserves global `game_id` identity and records a collection manifest;
+- collection-aware warehouse preflight that unions only manifest-listed shard datasets for dbt.
 
 Deferred on purpose:
 
@@ -119,6 +123,15 @@ Make targets:
 - `make dbt-build`
 - `make dbt-docs`
 - `make benchmark-report`
+- `make shard-fixture`
+- `make shard-fixture-status`
+- `make ingest-fixture-shards`
+- `make collection-verify`
+- `make shard-2017-dry-run`
+- `make shard-2017`
+- `make ingest-2017-shard`
+- `make ingest-2017-status`
+- `make ingest-2017-verify`
 - `make test`
 - `make lint`
 - `make typecheck`
@@ -177,6 +190,49 @@ Recommended sequence:
 4. Run dbt `debug`, `compile`, `build`, and optionally `docs generate`.
 
 Preflight fails early with explicit errors when the dataset root is missing, manifest status is not complete, required parquet partitions are absent, or manifest counts disagree with physical parquet counts.
+
+## Phase 1.2c Resumable Sharding Workflow
+
+Large monthly archives are processed over multiple sessions by splitting them into
+independent, game-boundary-aware shards and ingesting a few shards per session.
+
+Core commands (PowerShell shown; Linux/macOS use `uv run ...` directly):
+
+```powershell
+# Inspect without processing (disk + checksum + plan preview)
+python -m uv run python -m chesslens.ingestion.run_sharding `
+  --config configs/sharding/2017_01.yaml --dry-run
+
+# Create or resume raw shards
+python -m uv run python -m chesslens.ingestion.run_sharding `
+  --config configs/sharding/2017_01.yaml --resume
+
+# Process one new shard this session (then you may shut down)
+python -m uv run python -m chesslens.ingestion.run_sharded_ingestion `
+  --config configs/ingestion/2017_01_sharded.yaml --max-new-shards 1 --resume
+
+# Progress without processing
+python -m uv run python -m chesslens.ingestion.run_sharded_ingestion `
+  --config configs/ingestion/2017_01_sharded.yaml --status
+
+# Validate the completed collection
+python -m uv run python -m chesslens.ingestion.run_sharded_ingestion `
+  --config configs/ingestion/2017_01_sharded.yaml --verify-only
+```
+
+Collection dbt build (unions only manifest-listed shard datasets):
+
+```powershell
+$env:CHESSLENS_COLLECTION_ROOT = "data/processed/collections/<collection_id>"
+python -m uv run python -m chesslens.warehouse.preflight
+python -m uv run dbt build --project-dir dbt --profiles-dir dbt
+```
+
+Identity guarantee: a game's `game_id` is derived from the parent archive SHA-256
+and its global game index, so it is identical whether ingested directly from the
+parent or from a shard. Raw shards live under `data/raw_shards/` (git-ignored);
+collections under `data/processed/collections/` (git-ignored). Do not start a full
+2017-01 run casually — it is a multi-session, multi-hour job.
 
 ## Phase 1.2a Output Layout
 
@@ -253,7 +309,7 @@ This report is a functional validation sample, not a statistical population stud
 - Property tests: randomized legal positions for encode/decode and determinism invariants.
 - Integration tests: streaming fixture replay, schema conformance, Arrow/Parquet round-trips.
 
-CI runs Ruff, mypy, and all Python tests first, then builds a fixture ingestion dataset and executes warehouse preflight + dbt `debug`/`compile`/`build`.
+CI runs Ruff, mypy, and all Python tests first, then builds a fixture ingestion dataset and executes warehouse preflight + dbt `debug`/`compile`/`build`, then builds a fixture shard collection and runs the collection dbt build. CI never depends on local raw archives.
 
 ## Data Source and Licensing
 
@@ -290,3 +346,4 @@ Lichess database exports are published under CC0. Verify current terms at the of
 - Learning walkthrough: `docs/learning/phase0_and_1_1_walkthrough.md`
 - Phase 1.2a walkthrough: `docs/learning/phase1_2a_parquet_etl_walkthrough.md`
 - Phase 1.2b walkthrough: `docs/learning/phase1_2b_dbt_sql_walkthrough.md`
+- Phase 1.2c walkthrough: `docs/learning/phase1_2c_resumable_sharding_walkthrough.md`

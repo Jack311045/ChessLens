@@ -57,3 +57,26 @@ jobs:
 
       - name: dbt build
         run: uv run dbt build --project-dir dbt --profiles-dir dbt
+
+      - name: Build fixture shard collection
+        shell: bash
+        run: |
+          rm -rf data/raw_shards/2013-01 data/processed/collections
+          uv run python -m chesslens.ingestion.run_sharding \
+            --config configs/sharding/fixture.yaml --resume
+          collection_json="$(uv run python -m chesslens.ingestion.run_sharded_ingestion \
+            --config configs/ingestion/fixture_sharded.yaml --resume)"
+          echo "$collection_json"
+          collection_dir="$(echo "$collection_json" | python -c 'import sys, json; print(json.load(sys.stdin)["collection_dir"])')"
+          uv run python -m chesslens.ingestion.run_sharded_ingestion \
+            --config configs/ingestion/fixture_sharded.yaml --verify-only
+
+          echo "CHESSLENS_COLLECTION_ROOT=$collection_dir" >> "$GITHUB_ENV"
+          echo "CHESSLENS_DUCKDB_PATH=data/tmp/chesslens_ci_collection.duckdb" >> "$GITHUB_ENV"
+          echo "CHESSLENS_DUCKDB_TEMP_DIR=data/tmp/duckdb_temp_ci_collection" >> "$GITHUB_ENV"
+
+      - name: Collection preflight
+        run: uv run python -m chesslens.warehouse.preflight
+
+      - name: Collection dbt build
+        run: uv run dbt build --project-dir dbt --profiles-dir dbt

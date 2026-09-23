@@ -13,7 +13,7 @@ Why:
 ## Runtime Dependencies
 
 - `python-chess`: PGN parsing, legal move validation, board reconstruction.
-- `zstandard`: streaming decompression of `.pgn.zst` without full extraction.
+- `zstandard`: streaming decompression of `.pgn.zst` without full extraction, and streaming compression of independent Phase 1.2c shards.
 - `numpy`: deterministic tensor representation for position/action encodings.
 - `polars`: lightweight, future-proof analytics and schema checks.
 - `pyarrow`: explicit analytical schemas and Parquet interoperability.
@@ -22,6 +22,9 @@ Why:
 - `PyYAML`: externalized ingestion config loading.
 - `dbt-core` (pinned): dbt CLI and SQL DAG execution for Phase 1.2b warehouse transformations.
 - `dbt-duckdb` (pinned): dbt adapter that materializes models in DuckDB and reads local views.
+
+Phase 1.2c (resumable sharding + collection ingestion) added **no new dependencies**;
+it reuses the existing `zstandard`, `pyarrow`, `duckdb`, `psutil`, and `PyYAML` stack.
 
 ## Development Dependencies
 
