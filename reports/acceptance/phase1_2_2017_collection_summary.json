@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0.0",
+  "phase": "1.2",
+  "evidence_type": "collection_acceptance_summary",
+  "provenance": {
+    "source": "verified_prompt_values_with_artifact_cross_check",
+    "artifact": null,
+    "artifact_cross_check": "data/tmp/phase1_2b_2017_evidence/T2_02_sample_rule_and_counts.json",
+    "prompt_verified_values_cross_checked": true
+  },
+  "measured": {
+    "collection_id": "56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb",
+    "shard_count": 43,
+    "accepted_games": 10644186,
+    "emitted_moves": 718564684,
+    "portfolio_10m_satisfied": true
+  },
+  "derived": {
+    "acceptance_threshold_games": 10000000,
+    "meets_10m_threshold": true
+  }
+}

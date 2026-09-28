@@ -27,7 +27,8 @@ Optional (with defaults):
 
 - `CHESSLENS_DUCKDB_PATH` (default `data/tmp/chesslens_warehouse.duckdb`)
 - `CHESSLENS_DUCKDB_MEMORY_LIMIT` (default `4GB`)
-- `CHESSLENS_DUCKDB_TEMP_DIR` (default `data/tmp/duckdb_temp`)
+
+Do not set an explicit DuckDB temp-directory override in normal usage. The explicit profile temp-directory setting was removed after reconnect/runtime issues.
 
 ## Why Preflight Runs First
 

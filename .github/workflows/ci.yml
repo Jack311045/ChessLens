@@ -44,7 +44,6 @@ jobs:
           echo "CHESSLENS_DATASET_ROOT=$dataset_path" >> "$GITHUB_ENV"
           echo "CHESSLENS_DUCKDB_PATH=data/tmp/chesslens_ci_warehouse.duckdb" >> "$GITHUB_ENV"
           echo "CHESSLENS_DUCKDB_MEMORY_LIMIT=1GB" >> "$GITHUB_ENV"
-          echo "CHESSLENS_DUCKDB_TEMP_DIR=data/tmp/duckdb_temp_ci" >> "$GITHUB_ENV"
 
       - name: Warehouse preflight
         run: uv run python -m chesslens.warehouse.preflight
@@ -73,7 +72,6 @@ jobs:
 
           echo "CHESSLENS_COLLECTION_ROOT=$collection_dir" >> "$GITHUB_ENV"
           echo "CHESSLENS_DUCKDB_PATH=data/tmp/chesslens_ci_collection.duckdb" >> "$GITHUB_ENV"
-          echo "CHESSLENS_DUCKDB_TEMP_DIR=data/tmp/duckdb_temp_ci_collection" >> "$GITHUB_ENV"
 
       - name: Collection preflight
         run: uv run python -m chesslens.warehouse.preflight

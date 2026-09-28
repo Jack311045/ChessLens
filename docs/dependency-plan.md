@@ -1,4 +1,4 @@
-# Dependency Plan (Phase 0 and 1.1)
+# Dependency Plan (Phase 0 through Phase 1.2)
 
 ## Python Version
 
@@ -83,10 +83,11 @@ Defined in `pyproject.toml`:
 
 ## Command Semantics
 
-`uv sync --dev`:
+`python -m uv sync --frozen --dev`:
 
 - creates/updates local environment;
-- installs exactly the locked dependencies including development group.
+- installs the locked dependencies including development group;
+- fails if the lockfile would need to change, preventing unnoticed dependency drift.
 
 `uv run pytest`:
 
@@ -105,9 +106,9 @@ Defined in `pyproject.toml`:
 - validates published dataset completeness before dbt runs;
 - registers `bronze_*` DuckDB views over parquet and manifest inputs.
 
-If `uv` is not on PATH in Windows:
+If `uv` is on PATH:
 
-- use `python -m uv ...` equivalents.
+- `uv sync --frozen --dev` is equivalent.
 
 ## Exporting requirements.txt Later
 

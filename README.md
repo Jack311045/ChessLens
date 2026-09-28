@@ -12,7 +12,7 @@ This repository currently implements:
 - Phase 1.2d parallel ingestion: safe shard-level multiprocessing with a single-writer collection lock, in-order manifest commits, and process-tree memory telemetry.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
-This repository does not yet implement the full 10M-game ETL, model training, deployment, or performance claims.
+Phase 1 ETL and warehouse acceptance are complete, including 10M+ real-game processing and deterministic Tier-2 dbt validation.
 
 ## Project Objective
 
@@ -25,31 +25,28 @@ Build a verifiable end-to-end ML system with strong engineering fundamentals:
 
 ## Current Status
 
-Implemented now:
+Completed:
 
-- versioned schemas for `GameRecord`, `MoveRecord`, `PositionRecord`, `EngineEvalRecord`, `IngestionErrorRecord`, and `RunManifest`;
-- `18 x 8 x 8` board encoding and fixed `8 x 8 x 73` action encoding;
-- streaming `.pgn.zst` parsing with strict/tolerant behavior;
-- sanitized tiny fixture generation (`20` games default);
-- bounded sample profiling output at `reports/sample_profile.json`;
-- batch-based Parquet output for bronze `games`, `moves`, and `ingestion_errors` datasets;
-- deterministic `dataset_id` derived from source checksum and effective config;
-- explicit ingestion pipeline version (`parquet_etl_v1`) included in dataset identity;
-- optional source checksum verification (`expected_source_sha256`);
-- staged write + validation + publish workflow for idempotent dataset publication;
-- dbt models for `stg_games`, `stg_moves`, `stg_ingestion_errors`, `stg_manifest`, `int_positions`, `int_move_context`, `fct_move_events`, and `mart_policy_examples`;
-- preflight validation + DuckDB bronze view registration before dbt builds;
-- singular and generic dbt tests for keys, contiguity, manifest reconciliation, and leakage guards.
-- optional HMAC-based player anonymization mode for real archives.
-- streaming PGN-boundary sharding (`run_sharding`) with atomic `.partial` publication and a resumable shard manifest;
-- multi-session sharded ingestion (`run_sharded_ingestion`) that preserves global `game_id` identity and records a collection manifest;
-- collection-aware warehouse preflight that unions only manifest-listed shard datasets for dbt.
+- repository and dependency foundation;
+- schemas and chess encodings;
+- streaming PGN ingestion;
+- resumable and parallel shard processing;
+- 10M+ game Parquet ETL (2017-01 collection acceptance complete);
+- DuckDB/dbt transformations and warehouse-style tests;
+- deterministic 10% sample validation using `mod(hash(game_id), 10000) < 1000`;
+- Phase 1 acceptance evidence in `reports/acceptance/`.
 
-Deferred on purpose:
+Not yet completed:
 
-- Airflow DAG execution;
-- LightGBM/PyTorch/Optuna/MLflow training workflows;
-- FastAPI/ONNX/Docker/AWS serving.
+- modeling datasets and leakage-aware train/validation/test splits;
+- frequency and logistic baselines;
+- LightGBM ranking baseline;
+- custom PyTorch multi-task ResNet;
+- calibration, ablations, and error analysis;
+- MLflow and Optuna experiment workflows;
+- ONNX export and FastAPI serving;
+- Docker production image;
+- AWS deployment, monitoring, and drift reporting.
 
 ## Architecture Overview
 
@@ -100,14 +97,14 @@ Python target: `3.11`.
 `uv` workflow:
 
 ```bash
-uv sync --dev
+python -m uv sync --frozen --dev
 ```
 
-If `uv` is not on your PATH in Windows PowerShell:
+Dependency reproducibility notes:
 
-```powershell
-python -m uv sync --dev
-```
+- `pyproject.toml` defines project metadata and allowed dependency requirements.
+- `uv.lock` pins the exact resolved dependency graph.
+- `--frozen` prevents unnoticed lockfile updates during setup.
 
 ## Commands
 
@@ -140,7 +137,7 @@ Make targets:
 
 Windows direct equivalents:
 
-- `python -m uv sync --dev`
+- `python -m uv sync --frozen --dev`
 - `python -m uv run python scripts/create_fixture.py --config configs/ingestion/fixture.yaml`
 - `python -m uv run python -m chesslens.ingestion.sample_profiler --config configs/ingestion/smoke.yaml`
 - `python -m uv run python -m chesslens.ingestion.run_ingestion --config configs/ingestion/fixture_etl.yaml`
@@ -182,7 +179,8 @@ Optional environment variables (defaults are safe for local development):
 
 - `CHESSLENS_DUCKDB_PATH` (default `data/tmp/chesslens_warehouse.duckdb`)
 - `CHESSLENS_DUCKDB_MEMORY_LIMIT` (default `4GB`)
-- `CHESSLENS_DUCKDB_TEMP_DIR` (default `data/tmp/duckdb_temp`)
+
+Do not set an explicit DuckDB temp-directory override in normal usage. The explicit profile temp-directory path was removed after reconnect/runtime issues.
 
 Recommended sequence:
 
@@ -339,20 +337,23 @@ Lichess database exports are published under CC0. Verify current terms at the of
 
 ## Limitations
 
-- Current ingestion focuses on schema/identity correctness and bounded-memory streaming.
-- No full monthly ETL partitions yet.
-- No training metrics, serving latency, or cloud deployment metrics yet.
+- Phase 1 ETL and warehouse validation are complete, but Phase 2+ modeling and deployment work is still pending.
+- No training metrics, serving latency, or cloud deployment metrics are claimed yet.
 
 ## Roadmap (Next Phases)
 
-1. Phase 1.2: scalable ETL writing Parquet partitions and run manifests.
-2. Phase 2: baseline models and leakage-aware evaluation framework.
-3. Phase 3: PyTorch multi-task network, experiment tracking, and model selection.
-4. Phase 4: API serving, ONNX optimization, Docker, CI/CD deployment.
+1. Phase 2: modeling datasets, leakage-aware splits, and baseline models.
+2. Phase 3: multi-task PyTorch training, ablations, calibration, and error analysis.
+3. Phase 4: model export, serving API, Docker packaging, and CI/CD hardening.
+4. Phase 5: cloud deployment, monitoring, and drift reporting.
 
 ## Core References
 
 - Blueprint copy: `docs/ChessLens_Project_Blueprint.md`
+- Phase 1 closeout guide: `docs/phase1_closeout.md`
+- Phase 1 collection acceptance report: `reports/acceptance/phase1_2_2017_collection_summary.json`
+- Phase 1 deterministic sample report: `reports/acceptance/phase1_2_2017_tier2_sample_summary.json`
+- Phase 1 dbt acceptance report: `reports/acceptance/phase1_2b_2017_dbt_summary.json`
 - Data contracts: `docs/data-contract.md`
 - Encoding specification: `docs/encoding-specification.md`
 - Architecture decisions: `docs/architecture-decisions.md`
