@@ -152,7 +152,8 @@ def load_ingestion_config(
     raw = _load_yaml_dict(config_path)
 
     if overrides:
-        raw.update({k: v for k, v in overrides.items() if v is not None})
+        # Preserve explicit None overrides (e.g., max_games=None to remove caps).
+        raw.update(dict(overrides))
 
     if "input_path" not in raw:
         raise ValueError("Config must include input_path")

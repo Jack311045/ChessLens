@@ -6,6 +6,7 @@ output_root: data/processed
 source_month: 2017-01
 strict: false
 require_complete_games: true
+max_games: null
 batch_games: 10000
 max_buffered_records: 500000
 parquet_compression: zstd

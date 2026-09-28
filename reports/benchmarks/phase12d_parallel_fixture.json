@@ -1,0 +1,38 @@
+{
+  "benchmark": "phase-1-2d-parallel-shard-ingestion-fixture",
+  "rows": [
+    {
+      "accepted_games": 20,
+      "emitted_moves": 1255,
+      "games_per_second": 12.5229,
+      "moves_per_second": 785.8108,
+      "parallel_efficiency": 1.0,
+      "peak_process_tree_rss_bytes": 110133248,
+      "speedup_vs_workers_1": 1.0,
+      "wall_clock_seconds": 1.597077,
+      "workers": 1
+    },
+    {
+      "accepted_games": 20,
+      "emitted_moves": 1255,
+      "games_per_second": 14.0999,
+      "moves_per_second": 884.7684,
+      "parallel_efficiency": 0.5629655609996828,
+      "peak_process_tree_rss_bytes": 309080064,
+      "speedup_vs_workers_1": 1.1259311219993655,
+      "wall_clock_seconds": 1.41845,
+      "workers": 2
+    },
+    {
+      "accepted_games": 20,
+      "emitted_moves": 1255,
+      "games_per_second": 18.392,
+      "moves_per_second": 1154.0988,
+      "parallel_efficiency": 0.36716810936622074,
+      "peak_process_tree_rss_bytes": 402272256,
+      "speedup_vs_workers_1": 1.468672437464883,
+      "wall_clock_seconds": 1.087429,
+      "workers": 4
+    }
+  ]
+}

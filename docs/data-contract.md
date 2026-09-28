@@ -226,6 +226,11 @@ Phase 1.2a manifest extensions:
 	- `checksum_duration_seconds`
 	- `processing_and_validation_duration_seconds`
 	- `total_duration_seconds`
+	- `parse_and_reconstruct_seconds`
+	- `record_transformation_seconds`
+	- `arrow_parquet_write_seconds`
+	- `duckdb_schema_validation_seconds`
+	- `dataset_publication_seconds`
 - Throughput fields with explicit names (`processing_*` and `total_*`) to avoid ambiguous timing claims.
 
 ## Explicit Prohibited Features in This Phase
@@ -409,6 +414,12 @@ started/updated timestamps), `portfolio_10m_satisfied`, and one entry per proces
 shard with its `dataset_id`, `dataset_relpath`, global range, counts, and per-shard
 performance.
 
+Phase 1.2d adds optional run-level observability metadata under `last_run`, including
+worker count, selected shard indices/count, new shards processed, wall-clock and
+worker-active durations, games/moves per wall-clock second, per-worker peak RSS,
+maximum worker peak RSS, process-tree peak RSS, failed shard indices, and optional
+speedup/parallel-efficiency values when a valid workers=1 baseline is provided.
+
 Reconciliation invariants (validated): shard-index contiguity; half-open global range
 contiguity; unique `dataset_id`s; aggregate counts equal the sum of per-shard counts;
 `portfolio_10m_satisfied` is `true` only when `status == complete` and
@@ -422,3 +433,10 @@ union.
 `shard_manifest_identity_hash`, `games_per_shard`, pipeline/schema/encoding versions,
 and the non-secret `player_hmac_key_id`. It never includes timestamps, secrets,
 absolute paths, or run ids.
+
+### Collection mutation lock
+
+Mutating sharded-ingestion runs are single-writer: a collection-scoped lock file is
+created atomically before selecting pending shards and removed on completion. If a
+lock owner process is no longer alive, stale-lock recovery removes the stale lock and
+proceeds safely. Read-only status checks remain lock-free.

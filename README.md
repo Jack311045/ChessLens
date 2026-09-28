@@ -9,6 +9,7 @@ This repository currently implements:
 - Phase 1.2a ingestion: bounded-memory batch ETL to schema-controlled partitioned Parquet with safe publication, reproducibility manifests, and DuckDB validation.
 - Phase 1.2b warehouse: DuckDB/dbt source registration, staging/intermediate/marts, and data quality tests for training-safe marts.
 - Phase 1.2c sharding: streaming, resumable, game-boundary-aware sharding and multi-session collection ingestion with preserved global game identity.
+- Phase 1.2d parallel ingestion: safe shard-level multiprocessing with a single-writer collection lock, in-order manifest commits, and process-tree memory telemetry.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 This repository does not yet implement the full 10M-game ETL, model training, deployment, or performance claims.
@@ -132,6 +133,7 @@ Make targets:
 - `make ingest-2017-shard`
 - `make ingest-2017-status`
 - `make ingest-2017-verify`
+- `make benchmark-shard-parallel-fixture`
 - `make test`
 - `make lint`
 - `make typecheck`
@@ -191,7 +193,7 @@ Recommended sequence:
 
 Preflight fails early with explicit errors when the dataset root is missing, manifest status is not complete, required parquet partitions are absent, or manifest counts disagree with physical parquet counts.
 
-## Phase 1.2c Resumable Sharding Workflow
+## Phase 1.2c/1.2d Resumable + Parallel Sharding Workflow
 
 Large monthly archives are processed over multiple sessions by splitting them into
 independent, game-boundary-aware shards and ingesting a few shards per session.
@@ -207,9 +209,13 @@ python -m uv run python -m chesslens.ingestion.run_sharding `
 python -m uv run python -m chesslens.ingestion.run_sharding `
   --config configs/sharding/2017_01.yaml --resume
 
-# Process one new shard this session (then you may shut down)
+# Process one new shard this session (sequential default: workers=1)
 python -m uv run python -m chesslens.ingestion.run_sharded_ingestion `
-  --config configs/ingestion/2017_01_sharded.yaml --max-new-shards 1 --resume
+	--config configs/ingestion/2017_01_sharded.yaml --max-new-shards 1 --resume
+
+# Process three pending shards with up to three concurrent workers
+python -m uv run python -m chesslens.ingestion.run_sharded_ingestion `
+	--config configs/ingestion/2017_01_sharded.yaml --workers 3 --max-new-shards 3 --resume
 
 # Progress without processing
 python -m uv run python -m chesslens.ingestion.run_sharded_ingestion `
@@ -233,6 +239,13 @@ and its global game index, so it is identical whether ingested directly from the
 parent or from a shard. Raw shards live under `data/raw_shards/` (git-ignored);
 collections under `data/processed/collections/` (git-ignored). Do not start a full
 2017-01 run casually — it is a multi-session, multi-hour job.
+
+Fixture benchmark command (workers 1/2/4, no real-data ingestion):
+
+```powershell
+python -m uv run python scripts/benchmark_parallel_shard_ingestion.py `
+	--workers 1,2,4 --output reports/benchmarks/phase12d_parallel_fixture.json
+```
 
 ## Phase 1.2a Output Layout
 
@@ -347,3 +360,4 @@ Lichess database exports are published under CC0. Verify current terms at the of
 - Phase 1.2a walkthrough: `docs/learning/phase1_2a_parquet_etl_walkthrough.md`
 - Phase 1.2b walkthrough: `docs/learning/phase1_2b_dbt_sql_walkthrough.md`
 - Phase 1.2c walkthrough: `docs/learning/phase1_2c_resumable_sharding_walkthrough.md`
+- Phase 1.2d walkthrough: `docs/learning/phase1_2d_parallel_shard_ingestion_walkthrough.md`

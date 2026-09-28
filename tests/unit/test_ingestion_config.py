@@ -60,6 +60,25 @@ def test_null_max_games_means_read_to_eof(tmp_path: Path) -> None:
     assert config.max_games is None
 
 
+def test_none_override_clears_non_null_max_games(tmp_path: Path) -> None:
+    archive_path = tmp_path / "fixture.pgn.zst"
+    archive_path.write_bytes(b"placeholder")
+    config_path = tmp_path / "override-null-max.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                f"input_path: {archive_path.as_posix()}",
+                "max_games: 5",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_ingestion_config(config_path, overrides={"max_games": None})
+    assert config.max_games is None
+
+
 def test_string_boolean_parsing(tmp_path: Path) -> None:
     config_path = tmp_path / "bool.yaml"
     config_path.write_text(
