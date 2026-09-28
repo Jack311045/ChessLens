@@ -1,4 +1,4 @@
-# Architecture Decisions (Phase 0 through 1.2c)
+# Architecture Decisions (Phase 0 through 1.2d)
 
 This file records early decisions using a lightweight ADR style: context, decision, consequences, alternatives.
 
@@ -497,3 +497,59 @@ Alternatives considered:
 Why not chosen:
 - Adds format complexity and a new dependency for a one-time linear scan that is
   already inexpensive relative to ingestion.
+
+## ADR-024: parallel shard orchestration is execution-only (no identity bump)
+
+Context:
+- Phase 1.2d adds shard-level multiprocessing to reduce wall-clock time, but must
+  preserve all existing logical identity guarantees and compatibility with partially
+  completed collections created by Phase 1.2c.
+
+Decision:
+- Treat worker parallelism as an execution strategy, not a logical transformation
+  change.
+- Keep `INGESTION_PIPELINE_VERSION`, schema/encoding versions, `dataset_id`,
+  `collection_id`, `game_id`, and `SourceLineage` semantics unchanged.
+- Do not include worker count, scheduler behavior, process IDs, or wall-clock
+  timing in logical identity derivation.
+
+Consequences:
+- Sequential and parallel runs over the same inputs produce the same logical
+  dataset/collection identities.
+- Existing partially completed Phase 1.2c collections remain resumable without
+  migration.
+
+Alternatives considered:
+- Bump pipeline/identity versions to encode worker strategy.
+
+Why not chosen:
+- Parallel orchestration does not change record semantics; bumping identity would
+  create unnecessary incompatibility and duplicate published data.
+
+## ADR-025: single-writer collection lock + in-order manifest commits
+
+Context:
+- Multiple orchestrators running at once can race and process the same pending
+  shard, and parallel workers can finish out of order.
+
+Decision:
+- Enforce a collection-scoped single-writer lock for mutating orchestrator runs
+  using atomic lock-file creation and stale-lock recovery.
+- Keep `--status` and other read-only operations lock-free.
+- Allow workers to finish out of order, but commit shard entries to the collection
+  manifest only in contiguous shard-index order.
+- Keep manifest publication atomic (temp write + replace) and parent-only.
+
+Consequences:
+- Concurrent mutators cannot double-process a shard within one collection.
+- Ctrl+C/process failure cannot corrupt an existing valid manifest.
+- Successful higher-index shard datasets can be safely reused later, even if an
+  earlier shard failure temporarily blocks contiguous manifest advancement.
+
+Alternatives considered:
+- No lock, relying on eventual idempotency.
+- Let workers write manifest entries directly.
+
+Why not chosen:
+- No lock allows duplicate work and race windows.
+- Multi-writer manifests break atomicity and make reconciliation unsafe.

@@ -26,6 +26,10 @@ Why:
 Phase 1.2c (resumable sharding + collection ingestion) added **no new dependencies**;
 it reuses the existing `zstandard`, `pyarrow`, `duckdb`, `psutil`, and `PyYAML` stack.
 
+Phase 1.2d (safe parallel shard ingestion) also adds **no new dependencies**; shard
+parallelism uses Python standard library process pools (`concurrent.futures` /
+`multiprocessing`) and existing `psutil` memory telemetry.
+
 ## Development Dependencies
 
 - `pytest`: unit + integration test runner.

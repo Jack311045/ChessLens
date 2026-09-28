@@ -439,6 +439,10 @@ def run_ingestion(
     rejected_games = 0
     emitted_moves = 0
     batches_written = 0
+    parse_and_reconstruct_seconds = 0.0
+    arrow_parquet_write_seconds = 0.0
+    duckdb_schema_validation_seconds = 0.0
+    dataset_publication_seconds = 0.0
 
     game_buffer: list[Any] = []
     move_buffer: list[Any] = []
@@ -455,12 +459,14 @@ def run_ingestion(
         return len(game_buffer) + len(move_buffer) + len(error_buffer)
 
     def flush_buffers() -> None:
-        nonlocal batches_written
+        nonlocal batches_written, arrow_parquet_write_seconds
         if not game_buffer and not move_buffer and not error_buffer:
             return
+        write_started = time.perf_counter()
         writer.write_records("games", game_buffer)
         writer.write_records("moves", move_buffer)
         writer.write_records("ingestion_errors", error_buffer)
+        arrow_parquet_write_seconds += max(time.perf_counter() - write_started, 0.0)
         game_buffer.clear()
         move_buffer.clear()
         error_buffer.clear()
@@ -479,6 +485,7 @@ def run_ingestion(
             scanned_games += 1
             global_game_index = global_index_offset + source_game_index
             try:
+                parse_started = time.perf_counter()
                 parsed = parse_game_to_records(
                     game=raw_game,
                     source_archive=identity_archive_name,
@@ -488,6 +495,10 @@ def run_ingestion(
                     run_id=run_id,
                     player_hash_mode=config.player_hash_mode,
                     player_hash_secret=player_hmac_secret,
+                )
+                parse_and_reconstruct_seconds += max(
+                    time.perf_counter() - parse_started,
+                    0.0,
                 )
             except GameParseError as exc:
                 rejected_games += 1
@@ -538,12 +549,17 @@ def run_ingestion(
         flush_buffers()
 
         writer.ensure_schema_safe_empty_parts()
+        validation_started = time.perf_counter()
         validation_result = validate_staged_dataset(
             dataset_root=staging_dataset_path,
             expected_source_month=source_month,
             expected_games=accepted_games,
             expected_moves=emitted_moves,
             expected_errors=rejected_games,
+        )
+        duckdb_schema_validation_seconds = max(
+            time.perf_counter() - validation_started,
+            0.0,
         )
 
         peak_rss_bytes = memory_sampler.stop()
@@ -554,7 +570,7 @@ def run_ingestion(
 
         stats = writer.stats()
         total_duration_seconds = max(time.perf_counter() - total_started, 0.0)
-        manifest = {
+        manifest: dict[str, Any] = {
             "manifest_version": "1.0.0",
             "dataset_id": dataset_id,
             "run_id": run_id,
@@ -644,7 +660,41 @@ def run_ingestion(
             raise RuntimeError(
                 f"Refusing to overwrite existing dataset path: {final_dataset_path}"
             )
+        publication_started = time.perf_counter()
         staging_dataset_path.rename(final_dataset_path)
+        dataset_publication_seconds = max(
+            time.perf_counter() - publication_started,
+            0.0,
+        )
+
+        manifest["performance"].update(
+            {
+                "parse_and_reconstruct_seconds": round(
+                    parse_and_reconstruct_seconds,
+                    6,
+                ),
+                "record_transformation_seconds": round(
+                    parse_and_reconstruct_seconds,
+                    6,
+                ),
+                "arrow_parquet_write_seconds": round(
+                    arrow_parquet_write_seconds,
+                    6,
+                ),
+                "duckdb_schema_validation_seconds": round(
+                    duckdb_schema_validation_seconds,
+                    6,
+                ),
+                "dataset_publication_seconds": round(
+                    dataset_publication_seconds,
+                    6,
+                ),
+            }
+        )
+        (final_dataset_path / "_manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
         return IngestionRunResult(
             run_id=run_id,
@@ -695,6 +745,14 @@ def run_ingestion(
                 ),
                 "total_duration_seconds": round(failed_total_duration_seconds, 6),
                 "peak_rss_bytes": peak_rss_bytes,
+                "parse_and_reconstruct_seconds": round(parse_and_reconstruct_seconds, 6),
+                "record_transformation_seconds": round(parse_and_reconstruct_seconds, 6),
+                "arrow_parquet_write_seconds": round(arrow_parquet_write_seconds, 6),
+                "duckdb_schema_validation_seconds": round(
+                    duckdb_schema_validation_seconds,
+                    6,
+                ),
+                "dataset_publication_seconds": round(dataset_publication_seconds, 6),
             },
         }
         (staging_dataset_path / "_manifest.json").write_text(
