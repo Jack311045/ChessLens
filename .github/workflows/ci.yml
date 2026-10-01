@@ -98,74 +98,74 @@ jobs:
             --output-root data/modeling)"
           echo "$second_json"
 
-            FIRST_JSON="$first_json" SECOND_JSON="$second_json" python - <<'PY'
-            import json
-            import os
+          FIRST_JSON="$first_json" SECOND_JSON="$second_json" python - <<'PY'
+          import json
+          import os
 
 
-            def parse_single_json_env(name: str) -> dict[str, object]:
-              text = os.environ.get(name, "")
-              if not text.strip():
-                raise SystemExit(f"{name} stdout is empty")
+          def parse_single_json_env(name: str) -> dict[str, object]:
+            text = os.environ.get(name, "")
+            if not text.strip():
+              raise SystemExit(f"{name} stdout is empty")
 
-              stripped = text.lstrip()
-              decoder = json.JSONDecoder()
-              try:
-                payload, end_index = decoder.raw_decode(stripped)
-              except json.JSONDecodeError as exc:
-                raise SystemExit(f"{name} stdout is invalid JSON: {exc}") from exc
+            stripped = text.lstrip()
+            decoder = json.JSONDecoder()
+            try:
+              payload, end_index = decoder.raw_decode(stripped)
+            except json.JSONDecodeError as exc:
+              raise SystemExit(f"{name} stdout is invalid JSON: {exc}") from exc
 
-              if stripped[end_index:].strip():
-                raise SystemExit(f"{name} stdout contains trailing non-JSON content")
+            if stripped[end_index:].strip():
+              raise SystemExit(f"{name} stdout contains trailing non-JSON content")
 
-              if not isinstance(payload, dict):
-                raise SystemExit(f"{name} JSON root must be an object")
-              return payload
+            if not isinstance(payload, dict):
+              raise SystemExit(f"{name} JSON root must be an object")
+            return payload
 
 
-            first = parse_single_json_env("FIRST_JSON")
-            second = parse_single_json_env("SECOND_JSON")
+          first = parse_single_json_env("FIRST_JSON")
+          second = parse_single_json_env("SECOND_JSON")
 
-            if first.get("reused_existing") is not False:
-              raise SystemExit(
-                "First modeling run unexpectedly reused an existing dataset "
-                f"(reused_existing={first.get('reused_existing')!r})"
-              )
-
-            if second.get("reused_existing") is not True:
-              raise SystemExit(
-                "Second modeling run unexpectedly rebuilt the dataset "
-                f"(reused_existing={second.get('reused_existing')!r})"
-              )
-
-            first_id = first.get("modeling_dataset_id")
-            second_id = second.get("modeling_dataset_id")
-            if first_id != second_id:
-              raise SystemExit(
-                "Modeling dataset IDs differ between runs: "
-                f"first={first_id!r}, second={second_id!r}"
-              )
-
-            keys_to_match = (
-              "collection_id",
-              "selected_games",
-              "selected_examples",
-              "split_counts_games",
-              "split_counts_examples",
-              "novel_position_test_rows",
+          if first.get("reused_existing") is not False:
+            raise SystemExit(
+              "First modeling run unexpectedly reused an existing dataset "
+              f"(reused_existing={first.get('reused_existing')!r})"
             )
-            mismatches: list[str] = []
-            for key in keys_to_match:
-              if first.get(key) != second.get(key):
-                mismatches.append(
-                  f"{key}: first={first.get(key)!r}, second={second.get(key)!r}"
-                )
 
-            if mismatches:
-              raise SystemExit(
-                "Logical modeling counts/metadata differ across idempotent runs: "
-                + "; ".join(mismatches)
+          if second.get("reused_existing") is not True:
+            raise SystemExit(
+              "Second modeling run unexpectedly rebuilt the dataset "
+              f"(reused_existing={second.get('reused_existing')!r})"
+            )
+
+          first_id = first.get("modeling_dataset_id")
+          second_id = second.get("modeling_dataset_id")
+          if first_id != second_id:
+            raise SystemExit(
+              "Modeling dataset IDs differ between runs: "
+              f"first={first_id!r}, second={second_id!r}"
+            )
+
+          keys_to_match = (
+            "collection_id",
+            "selected_games",
+            "selected_examples",
+            "split_counts_games",
+            "split_counts_examples",
+            "novel_position_test_rows",
+          )
+          mismatches: list[str] = []
+          for key in keys_to_match:
+            if first.get(key) != second.get(key):
+              mismatches.append(
+                f"{key}: first={first.get(key)!r}, second={second.get(key)!r}"
               )
 
-            print("Modeling idempotency check passed")
-            PY
+          if mismatches:
+            raise SystemExit(
+              "Logical modeling counts/metadata differ across idempotent runs: "
+              + "; ".join(mismatches)
+            )
+
+          print("Modeling idempotency check passed")
+          PY
