@@ -57,11 +57,19 @@ from chesslens.modeling.writer import ModelingParquetWriter, PartitionWriteStats
 class ModelingBuildResult:
     run_id: str
     modeling_dataset_id: str
+    collection_id: str
     dataset_path: Path
     manifest_path: Path
     reused_existing: bool
     selected_games: int
     selected_examples: int
+    split_counts_games: dict[str, int]
+    split_counts_examples: dict[str, int]
+    novel_position_test_rows: int
+    duration_seconds: float | None
+    peak_rss_bytes: int | None
+    dry_run: bool
+    validate_only: bool
 
 
 def _utc_now_iso() -> str:
@@ -117,6 +125,128 @@ def _display_path(path: Path) -> str:
         return path.relative_to(Path.cwd()).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def _as_mapping(value: Any, *, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Manifest field {field_name} must be an object")
+    return value
+
+
+def _as_required_int(value: Any, *, field_name: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Manifest field {field_name} must be an integer") from exc
+
+
+def _as_optional_int(value: Any, *, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _as_required_int(value, field_name=field_name)
+
+
+def _as_optional_float(value: Any, *, field_name: str) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"Manifest field {field_name} must be numeric") from exc
+
+
+def _int_mapping(value: Any, *, field_name: str) -> dict[str, int]:
+    payload = _as_mapping(value, field_name=field_name)
+    result: dict[str, int] = {}
+    for key, item in payload.items():
+        result[str(key)] = _as_required_int(item, field_name=f"{field_name}.{key}")
+    return result
+
+
+def _result_from_manifest(
+    *,
+    run_id: str,
+    modeling_dataset_id: str,
+    dataset_path: Path,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    reused_existing: bool,
+    validate_only: bool,
+) -> ModelingBuildResult:
+    upstream = _as_mapping(manifest.get("upstream"), field_name="upstream")
+    collection_id = str(upstream.get("collection_id", "")).strip()
+    if not collection_id:
+        raise RuntimeError("Manifest field upstream.collection_id must be non-empty")
+
+    counts = _as_mapping(manifest.get("counts"), field_name="counts")
+    split_counts_games = _int_mapping(
+        counts.get("game_assignments_by_split"),
+        field_name="counts.game_assignments_by_split",
+    )
+    split_counts_examples = _int_mapping(
+        counts.get("policy_examples_by_split"),
+        field_name="counts.policy_examples_by_split",
+    )
+
+    selected_games = _as_required_int(
+        counts.get("selected_games"), field_name="counts.selected_games"
+    )
+    selected_examples = _as_required_int(
+        counts.get("selected_policy_examples"),
+        field_name="counts.selected_policy_examples",
+    )
+    novel_position_test_rows = _as_required_int(
+        counts.get("novel_position_test_rows"),
+        field_name="counts.novel_position_test_rows",
+    )
+
+    performance_raw = manifest.get("performance", {})
+    if not isinstance(performance_raw, dict):
+        raise RuntimeError("Manifest field performance must be an object")
+    performance = performance_raw
+    duration_seconds = _as_optional_float(
+        performance.get("duration_seconds"), field_name="performance.duration_seconds"
+    )
+    peak_rss_bytes = _as_optional_int(
+        performance.get("peak_rss_bytes"), field_name="performance.peak_rss_bytes"
+    )
+
+    return ModelingBuildResult(
+        run_id=run_id,
+        modeling_dataset_id=modeling_dataset_id,
+        collection_id=collection_id,
+        dataset_path=dataset_path,
+        manifest_path=manifest_path,
+        reused_existing=reused_existing,
+        selected_games=selected_games,
+        selected_examples=selected_examples,
+        split_counts_games=split_counts_games,
+        split_counts_examples=split_counts_examples,
+        novel_position_test_rows=novel_position_test_rows,
+        duration_seconds=duration_seconds,
+        peak_rss_bytes=peak_rss_bytes,
+        dry_run=False,
+        validate_only=validate_only,
+    )
+
+
+def modeling_build_result_to_json(result: ModelingBuildResult) -> dict[str, Any]:
+    return {
+        "collection_id": result.collection_id,
+        "dry_run": result.dry_run,
+        "duration_seconds": result.duration_seconds,
+        "manifest_path": _display_path(result.manifest_path),
+        "modeling_dataset_id": result.modeling_dataset_id,
+        "novel_position_test_rows": result.novel_position_test_rows,
+        "peak_rss_bytes": result.peak_rss_bytes,
+        "reused_existing": result.reused_existing,
+        "run_id": result.run_id,
+        "selected_examples": result.selected_examples,
+        "selected_games": result.selected_games,
+        "split_counts_examples": result.split_counts_examples,
+        "split_counts_games": result.split_counts_games,
+        "validate_only": result.validate_only,
+    }
 
 
 def _load_collection_identity(config: ModelingConfig) -> dict[str, Any]:
@@ -951,19 +1081,19 @@ def run_modeling_dataset_build(
     manifest_path = final_dataset_path / "_manifest.json"
 
     if final_dataset_path.exists():
-        _validate_existing_dataset(
+        existing_manifest = _validate_existing_dataset(
             dataset_path=final_dataset_path,
             expected_dataset_id=modeling_dataset_id,
             expected_identity_payload_hash=identity_payload_hash,
         )
-        return ModelingBuildResult(
+        return _result_from_manifest(
             run_id=run_id,
             modeling_dataset_id=modeling_dataset_id,
             dataset_path=final_dataset_path,
             manifest_path=manifest_path,
+            manifest=existing_manifest,
             reused_existing=True,
-            selected_games=0,
-            selected_examples=0,
+            validate_only=validate_only,
         )
 
     if validate_only:
@@ -973,26 +1103,22 @@ def run_modeling_dataset_build(
         )
 
     if dry_run:
-        print(
-            json.dumps(
-                {
-                    "dry_run": True,
-                    "modeling_dataset_id": modeling_dataset_id,
-                    "collection_id": upstream["collection_id"],
-                    "identity_payload_sha256": identity_payload_hash,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
         return ModelingBuildResult(
             run_id=run_id,
             modeling_dataset_id=modeling_dataset_id,
+            collection_id=str(upstream["collection_id"]),
             dataset_path=final_dataset_path,
             manifest_path=manifest_path,
             reused_existing=False,
             selected_games=0,
             selected_examples=0,
+            split_counts_games={},
+            split_counts_examples={},
+            novel_position_test_rows=0,
+            duration_seconds=None,
+            peak_rss_bytes=None,
+            dry_run=True,
+            validate_only=False,
         )
 
     if not config.input.duckdb_path.exists():
@@ -1220,37 +1346,15 @@ def run_modeling_dataset_build(
         os.replace(staging_root, final_dataset_path)
         published = True
 
-        result = ModelingBuildResult(
+        return _result_from_manifest(
             run_id=run_id,
             modeling_dataset_id=modeling_dataset_id,
             dataset_path=final_dataset_path,
             manifest_path=final_dataset_path / "_manifest.json",
+            manifest=manifest,
             reused_existing=False,
-            selected_games=int(sum(assignment_counts.values())),
-            selected_examples=int(sum(move_counts.values())),
+            validate_only=False,
         )
-
-        print(
-            json.dumps(
-                {
-                    "modeling_dataset_id": result.modeling_dataset_id,
-                    "run_id": result.run_id,
-                    "collection_id": upstream["collection_id"],
-                    "selected_games": result.selected_games,
-                    "selected_examples": result.selected_examples,
-                    "split_counts_games": assignment_counts,
-                    "split_counts_examples": move_counts,
-                    "novel_position_test_rows": novel_slice_count,
-                    "reused_existing": result.reused_existing,
-                    "manifest_path": _display_path(result.manifest_path),
-                    "duration_seconds": manifest["performance"]["duration_seconds"],
-                    "peak_rss_bytes": manifest["performance"]["peak_rss_bytes"],
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
-        return result
     finally:
         connection.close()
         if not published:
@@ -1262,7 +1366,7 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    run_modeling_dataset_build(
+    result = run_modeling_dataset_build(
         config_path=Path(args.config),
         collection_root_override=args.collection_root,
         output_root_override=args.output_root,
@@ -1272,6 +1376,7 @@ def main() -> None:
         dry_run=bool(args.dry_run),
         validate_only=bool(args.validate_only),
     )
+    print(json.dumps(modeling_build_result_to_json(result), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

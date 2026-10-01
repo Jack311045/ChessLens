@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
+from typing import Any, cast
 
 import chess
 import duckdb
@@ -9,6 +12,41 @@ import pytest
 
 from chesslens.features.position_encoding import normalize_fen, position_id_from_fen
 from chesslens.modeling.build_dataset import run_modeling_dataset_build
+
+
+def _parse_single_json_document(text: str) -> dict[str, object]:
+    stripped = text.lstrip()
+    assert stripped, "stdout is unexpectedly empty"
+
+    decoder = json.JSONDecoder()
+    payload, end_index = decoder.raw_decode(stripped)
+    assert stripped[end_index:].strip() == "", "stdout contains trailing non-JSON content"
+    assert isinstance(payload, dict), "CLI JSON root is not an object"
+    return cast(dict[str, object], payload)
+
+
+def _run_modeling_cli(
+    config_path: Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    args = [
+        sys.executable,
+        "-m",
+        "chesslens.modeling.build_dataset",
+        "--config",
+        str(config_path),
+    ]
+    if extra_args:
+        args.extend(extra_args)
+
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        cwd=Path.cwd(),
+        check=False,
+    )
 
 
 def _write_collection_manifest(collection_root: Path) -> None:
@@ -330,6 +368,12 @@ def test_modeling_build_idempotent_reuse(tmp_path: Path) -> None:
     assert first.reused_existing is False
     assert second.reused_existing is True
     assert first.modeling_dataset_id == second.modeling_dataset_id
+    assert first.collection_id == second.collection_id == "collection-fixture-001"
+    assert first.selected_games == second.selected_games == 3
+    assert first.selected_examples == second.selected_examples == 5
+    assert first.split_counts_games == second.split_counts_games
+    assert first.split_counts_examples == second.split_counts_examples
+    assert first.novel_position_test_rows == second.novel_position_test_rows == 1
 
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
@@ -337,6 +381,103 @@ def test_modeling_build_idempotent_reuse(tmp_path: Path) -> None:
     assert manifest["counts"]["selected_policy_examples"] == 5
     assert manifest["counts"]["novel_position_test_rows"] == 1
     assert (first.dataset_path / "_SUCCESS").exists()
+
+
+def test_modeling_cli_emits_single_json_and_reuses_with_same_counts(tmp_path: Path) -> None:
+    config_path, _ = _setup_fixture_environment(tmp_path)
+
+    first = _run_modeling_cli(config_path)
+    assert first.returncode == 0, first.stderr
+    first_payload = _parse_single_json_document(first.stdout)
+    assert first_payload["reused_existing"] is False
+    assert "RuntimeWarning" not in first.stderr
+    assert "RuntimeWarning" not in first.stdout
+
+    second = _run_modeling_cli(config_path)
+    assert second.returncode == 0, second.stderr
+    second_payload = _parse_single_json_document(second.stdout)
+    assert second_payload["reused_existing"] is True
+    assert "RuntimeWarning" not in second.stderr
+    assert "RuntimeWarning" not in second.stdout
+
+    assert first_payload["modeling_dataset_id"] == second_payload["modeling_dataset_id"]
+    assert first_payload["selected_games"] == second_payload["selected_games"]
+    assert first_payload["selected_examples"] == second_payload["selected_examples"]
+    assert first_payload["split_counts_games"] == second_payload["split_counts_games"]
+    assert first_payload["split_counts_examples"] == second_payload["split_counts_examples"]
+    assert first_payload["novel_position_test_rows"] == second_payload["novel_position_test_rows"]
+    assert first_payload["collection_id"] == second_payload["collection_id"]
+
+    manifest_path = Path(cast(str, first_payload["manifest_path"]))
+    manifest = cast(dict[str, Any], json.loads(manifest_path.read_text(encoding="utf-8")))
+    counts = cast(dict[str, Any], manifest["counts"])
+
+    assert first_payload["selected_games"] == counts["selected_games"]
+    assert first_payload["selected_examples"] == counts["selected_policy_examples"]
+    assert first_payload["split_counts_games"] == counts["game_assignments_by_split"]
+    assert first_payload["split_counts_examples"] == counts["policy_examples_by_split"]
+    assert first_payload["novel_position_test_rows"] == counts["novel_position_test_rows"]
+
+
+def test_modeling_cli_tampered_manifest_still_fails_reuse(tmp_path: Path) -> None:
+    config_path, _ = _setup_fixture_environment(tmp_path)
+
+    first = _run_modeling_cli(config_path)
+    assert first.returncode == 0, first.stderr
+    first_payload = _parse_single_json_document(first.stdout)
+
+    manifest_path = Path(cast(str, first_payload["manifest_path"]))
+    manifest_payload = cast(dict[str, Any], json.loads(manifest_path.read_text(encoding="utf-8")))
+    manifest_payload["identity_payload_sha256"] = "tampered"
+    manifest_path.write_text(
+        json.dumps(manifest_payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    second = _run_modeling_cli(config_path)
+    assert second.returncode != 0
+    assert second.stdout.strip() == ""
+    assert "identity mismatch" in second.stderr.lower()
+
+
+def test_modeling_cli_dry_run_emits_single_json(tmp_path: Path) -> None:
+    config_path, _ = _setup_fixture_environment(tmp_path)
+
+    result = _run_modeling_cli(config_path, extra_args=["--dry-run"])
+    assert result.returncode == 0, result.stderr
+
+    payload = _parse_single_json_document(result.stdout)
+    assert payload["dry_run"] is True
+    assert payload["validate_only"] is False
+    assert payload["reused_existing"] is False
+    assert payload["selected_games"] == 0
+    assert payload["selected_examples"] == 0
+    assert payload["split_counts_games"] == {}
+    assert payload["split_counts_examples"] == {}
+    assert "RuntimeWarning" not in result.stderr
+    assert "RuntimeWarning" not in result.stdout
+
+
+def test_modeling_cli_validate_only_success_emits_single_json(tmp_path: Path) -> None:
+    config_path, _ = _setup_fixture_environment(tmp_path)
+
+    build = _run_modeling_cli(config_path)
+    assert build.returncode == 0, build.stderr
+
+    result = _run_modeling_cli(config_path, extra_args=["--validate-only"])
+    assert result.returncode == 0, result.stderr
+
+    payload = _parse_single_json_document(result.stdout)
+    assert payload["dry_run"] is False
+    assert payload["validate_only"] is True
+    assert payload["reused_existing"] is True
+    assert payload["selected_games"] == 3
+    assert payload["selected_examples"] == 5
+    assert payload["split_counts_games"] == {"test": 1, "train": 1, "validation": 1}
+    assert payload["split_counts_examples"] == {"test": 2, "train": 2, "validation": 1}
+    assert payload["novel_position_test_rows"] == 1
+    assert "RuntimeWarning" not in result.stderr
+    assert "RuntimeWarning" not in result.stdout
 
 
 def test_modeling_build_rejects_tampered_manifest(tmp_path: Path) -> None:
