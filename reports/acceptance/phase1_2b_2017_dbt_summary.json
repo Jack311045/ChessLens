@@ -1,0 +1,28 @@
+{
+  "schema_version": "1.0.0",
+  "phase": "1.2b",
+  "evidence_type": "dbt_acceptance_summary",
+  "provenance": {
+    "source": "existing_completed_run_evidence",
+    "artifact": "data/tmp/phase1_2b_2017_evidence/T2_04_run_results_pass47.json",
+    "metadata": {
+      "generated_at_utc": "2026-09-28T04:43:19.280781Z",
+      "invocation_id": "dc4c8a91-7836-4297-9e2a-83edeccad5ee"
+    },
+    "prompt_verified_values_cross_checked": true
+  },
+  "measured": {
+    "models": 8,
+    "tests": 39,
+    "total_nodes": 47,
+    "pass": 47,
+    "warn": 0,
+    "error": 0,
+    "skip": 0,
+    "exit_code": 0,
+    "elapsed_seconds": 37120.95
+  },
+  "derived": {
+    "all_nodes_passing": true
+  }
+}

@@ -1,7 +1,7 @@
 [project]
 name = "chesslens"
 version = "0.1.0"
-description = "ChessLens Phase 0 and Phase 1.1 foundation: schemas, encodings, and streaming ingestion"
+description = "Reproducible large-scale chess ETL, DuckDB/dbt warehouse, and ML move-ranking pipeline"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [

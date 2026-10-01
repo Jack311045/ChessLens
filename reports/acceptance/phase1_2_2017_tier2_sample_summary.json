@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0.0",
+  "phase": "1.2b",
+  "evidence_type": "deterministic_tier2_sample_summary",
+  "provenance": {
+    "source": "existing_completed_run_evidence",
+    "artifact": "data/tmp/phase1_2b_2017_evidence/T2_02_sample_rule_and_counts.json",
+    "prompt_verified_values_cross_checked": true
+  },
+  "measured": {
+    "sampling_predicate": "mod(hash(game_id), 10000) < 1000",
+    "sampled_games": 1064712,
+    "sampled_moves": 71831105,
+    "full_games": 10644186,
+    "full_moves": 718564684,
+    "covered_shards": 43,
+    "expected_shards": 43,
+    "moves_covered_shards": 43
+  },
+  "derived": {
+    "all_shards_covered": true
+  }
+}
