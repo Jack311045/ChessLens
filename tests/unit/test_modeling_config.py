@@ -14,6 +14,10 @@ def _write_config(path: Path, *, schema_version: str = "1.1.0") -> None:
                 "input:",
                 "  collection_root: data/processed/collections/fixture_collection",
                 "  duckdb_path: data/tmp/chesslens_ci_collection.duckdb",
+                (
+                    "  warehouse_provenance_path: "
+                    "data/manifests/fixture_modeling_warehouse_provenance.json"
+                ),
                 "  expected_collection_id: null",
                 "versions:",
                 "  modeling_pipeline_version: modeling_dataset_v1",
@@ -73,6 +77,10 @@ def test_load_modeling_config_success(tmp_path: Path) -> None:
     assert config.sampling.hash_threshold == 10000
     assert config.splits.train.start_date.isoformat() == "2013-01-01"
     assert config.output.batch_rows == 5000
+    assert (
+        config.input.warehouse_provenance_path.name
+        == "fixture_modeling_warehouse_provenance.json"
+    )
 
 
 def test_load_modeling_config_rejects_unsupported_version(tmp_path: Path) -> None:
@@ -93,6 +101,7 @@ def test_apply_cli_overrides(tmp_path: Path) -> None:
         collection_root="data/other_collection",
         output_root="data/other_modeling",
         duckdb_path="data/tmp/other.duckdb",
+        warehouse_provenance_path="data/manifests/other_provenance.json",
         max_games=123,
         max_examples=456,
     )
@@ -100,5 +109,18 @@ def test_apply_cli_overrides(tmp_path: Path) -> None:
     assert overridden.input.collection_root.name == "other_collection"
     assert overridden.output.output_root.name == "other_modeling"
     assert overridden.input.duckdb_path.name == "other.duckdb"
+    assert overridden.input.warehouse_provenance_path.name == "other_provenance.json"
     assert overridden.sampling.max_games == 123
     assert overridden.output.max_examples == 456
+
+
+def test_load_modeling_config_requires_provenance_path(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    _write_config(config_path)
+
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+    filtered = [line for line in lines if "warehouse_provenance_path" not in line]
+    config_path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="input.warehouse_provenance_path"):
+        load_modeling_config(config_path)

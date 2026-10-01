@@ -11,6 +11,7 @@ This repository currently implements:
 - Phase 1.2c sharding: streaming, resumable, game-boundary-aware sharding and multi-session collection ingestion with preserved global game identity.
 - Phase 1.2d parallel ingestion: safe shard-level multiprocessing with a single-writer collection lock, in-order manifest commits, and process-tree memory telemetry.
 - Phase 2.1 modeling datasets: deterministic game sampling, leakage-aware temporal splits, player-holdout policy, policy/value labels, and staged idempotent publication.
+- Phase 2.1b provenance hardening: typed warehouse provenance identity, DuckDB snapshot validation, and two-stage sampling manifest semantics.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 Phase 1 ETL and warehouse acceptance are complete, including 10M+ real-game processing and deterministic Tier-2 dbt validation.
@@ -36,6 +37,7 @@ Completed:
 - DuckDB/dbt transformations and warehouse-style tests;
 - deterministic 10% sample validation using `mod(hash(game_id), 10000) < 1000`;
 - Phase 2.1 leakage-aware modeling dataset foundation with deterministic reuse checks;
+- Phase 2.1b upstream warehouse provenance hardening for safe modeling identity/reuse;
 - Phase 1 acceptance evidence in `reports/acceptance/`.
 
 Not yet completed:
@@ -155,7 +157,7 @@ Windows direct equivalents:
 - `python -m uv run dbt docs generate --project-dir dbt --profiles-dir dbt`
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root <dataset-root> --output reports/benchmarks/ingestion_benchmark.json`
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root data/processed/datasets/c7703b6c4404e13814dedd4431146c09fd6a389843a400a7ea4c4e2ec40ab4a9 --output reports/benchmarks/ingestion_2013_01.json`
-- `python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml --collection-root <collection-root> --duckdb-path <duckdb-path> --output-root data/modeling`
+- `python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml --collection-root <collection-root> --duckdb-path <duckdb-path> --warehouse-provenance-path <warehouse-provenance-path> --output-root data/modeling`
 - `python -m uv run pytest -q`
 - `python -m uv run ruff check .`
 - `python -m uv run mypy src tests scripts`
@@ -261,8 +263,32 @@ python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/fixture.yaml `
 	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
 	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
 	--output-root data/modeling
 ```
+
+Warehouse provenance is now mandatory. It is a typed artifact describing the exact
+DuckDB snapshot identity (kind, declared row counts, transformation identity,
+canonical SHA-256).
+
+Beginner explanation:
+
+- `collection_id` answers "which source collection?"
+- warehouse provenance answers "which DuckDB snapshot rows?"
+
+Those are different questions. Two DuckDB files can point at the same
+`collection_id` while containing different rows (for example full warehouse versus
+deterministic Tier-2 sample).
+
+Real 2017 Tier-2 sample config uses:
+
+- `configs/modeling/2017_01_sample.yaml`
+- `reports/acceptance/phase2_1b_2017_tier2_warehouse_provenance.json`
+
+That provenance artifact is derived from existing acceptance evidence:
+
+- `reports/acceptance/phase1_2_2017_tier2_sample_summary.json`
+- `reports/acceptance/phase1_2b_2017_dbt_summary.json`
 
 Published modeling outputs are written under:
 
@@ -273,6 +299,14 @@ Published modeling outputs are written under:
 
 Re-running the exact same effective configuration validates and reuses the existing
 published dataset rather than writing duplicates.
+
+Phase 2.1b also records sampling in two explicit stages:
+
+- warehouse stage (for example deterministic 10% Tier-2 warehouse),
+- modeling stage (for example deterministic 10% modeling selection).
+
+So a 10% warehouse plus 10% modeling selection is approximately a 1% cumulative
+sample of the full collection, not a direct 10% sample.
 
 ## Phase 1.2a Output Layout
 

@@ -36,6 +36,7 @@ MissingPlayerHashPolicy = Literal[
 class ModelingInputConfig:
     collection_root: Path
     duckdb_path: Path
+    warehouse_provenance_path: Path
     expected_collection_id: str | None
     move_context_relation: str
     games_relation: str
@@ -240,6 +241,12 @@ def load_modeling_config(path: str | Path) -> ModelingConfig:
             _as_non_empty_string(
                 raw_input.get("duckdb_path", "data/tmp/chesslens_warehouse.duckdb"),
                 field_name="input.duckdb_path",
+            )
+        ),
+        warehouse_provenance_path=_resolve_path(
+            _as_non_empty_string(
+                raw_input.get("warehouse_provenance_path", ""),
+                field_name="input.warehouse_provenance_path",
             )
         ),
         expected_collection_id=_as_optional_string(raw_input.get("expected_collection_id")),
@@ -478,6 +485,7 @@ def apply_cli_overrides(
     collection_root: str | None,
     output_root: str | None,
     duckdb_path: str | None,
+    warehouse_provenance_path: str | None,
     max_games: int | None,
     max_examples: int | None,
 ) -> ModelingConfig:
@@ -486,6 +494,11 @@ def apply_cli_overrides(
         new_input = replace(new_input, collection_root=_resolve_path(collection_root))
     if duckdb_path is not None:
         new_input = replace(new_input, duckdb_path=_resolve_path(duckdb_path))
+    if warehouse_provenance_path is not None:
+        new_input = replace(
+            new_input,
+            warehouse_provenance_path=_resolve_path(warehouse_provenance_path),
+        )
 
     new_sampling = config.sampling
     if max_games is not None:

@@ -589,3 +589,42 @@ Why not chosen:
 - RNG-based policies break reproducibility and idempotent reuse guarantees.
 - Move-level split assignment can leak game context across partitions.
 - Direct-to-final writes expose partial datasets and complicate recovery.
+
+## ADR-027: warehouse provenance contract for modeling identity hardening
+
+Context:
+- A collection ID plus relation names is insufficient to identify the exact
+  warehouse snapshot used by modeling.
+- Two DuckDB files can point at the same collection and relation names while
+  containing different rows (for example full warehouse vs deterministic Tier-2
+  sample).
+
+Decision:
+- Require a typed, versioned warehouse provenance artifact
+  (`warehouse_provenance_v1`) as modeling input.
+- Include provenance version + canonical provenance SHA-256 in the modeling
+  identity payload and `modeling_dataset_id` derivation.
+- Validate provenance against DuckDB before writing output:
+  - required relations must exist,
+  - collection IDs must match,
+  - declared warehouse row counts must match actual relation counts,
+  - sampled/full declarations must be consistent.
+- Record two-stage sampling in modeling manifest (`sampling_stages`):
+  warehouse stage and modeling stage, plus cumulative effective rate relative to
+  full collection when derivable.
+
+Consequences:
+- Changing upstream warehouse provenance changes `modeling_dataset_id`.
+- Identical provenance + config preserves deterministic idempotent reuse.
+- Sampled warehouses cannot silently be treated as full warehouses.
+- Modeling manifests remain reproducible without relying on machine-specific
+  absolute file paths.
+
+Alternatives considered:
+- Keep identity keyed only to collection manifest + relation names.
+- Encode local DuckDB absolute paths in identity.
+
+Why not chosen:
+- Collection+relation-only identity allows silent collisions across different
+  warehouse snapshots.
+- Absolute paths are environment-specific and not reproducible identities.

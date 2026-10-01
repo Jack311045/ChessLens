@@ -84,10 +84,81 @@ jobs:
         run: |
           mkdir -p data/modeling
 
+          fixture_provenance_path="$(uv run python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          import duckdb
+
+
+          collection_root = Path(os.environ["CHESSLENS_COLLECTION_ROOT"])
+          duckdb_path = Path(os.environ["CHESSLENS_DUCKDB_PATH"])
+
+          collection_manifest = json.loads(
+            (collection_root / "_collection_manifest.json").read_text(encoding="utf-8")
+          )
+          collection_id = str(collection_manifest["collection_id"])
+
+          connection = duckdb.connect(str(duckdb_path), read_only=True)
+          try:
+            game_count = int(connection.execute("SELECT COUNT(*) FROM main.stg_games").fetchone()[0])
+            move_count = int(
+              connection.execute("SELECT COUNT(*) FROM main.int_move_context").fetchone()[0]
+            )
+          finally:
+            connection.close()
+
+          dbt_manifest_path = Path("dbt/target/manifest.json")
+          if not dbt_manifest_path.exists():
+            raise SystemExit("Expected dbt/target/manifest.json after dbt build")
+
+          payload_without_hash = {
+            "provenance_version": "warehouse_provenance_v1",
+            "warehouse_kind": "fixture",
+            "collection_id": collection_id,
+            "relations": {
+              "games_relation": "main.stg_games",
+              "move_context_relation": "main.int_move_context",
+            },
+            "snapshot_counts": {
+              "games": game_count,
+              "moves": move_count,
+            },
+            "transformation_identity": {
+              "identity_kind": "dbt_manifest_sha256",
+              "identity_value": hashlib.sha256(dbt_manifest_path.read_bytes()).hexdigest(),
+            },
+            "sampling": None,
+          }
+
+          canonical = json.dumps(
+            payload_without_hash,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+          )
+          payload = dict(payload_without_hash)
+          payload["warehouse_provenance_sha256"] = hashlib.sha256(
+            canonical.encode("utf-8")
+          ).hexdigest()
+
+          out_path = Path("data/manifests/fixture_modeling_warehouse_provenance.json")
+          out_path.parent.mkdir(parents=True, exist_ok=True)
+          out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+          print(out_path.as_posix())
+          PY
+          )"
+
+          echo "Fixture warehouse provenance artifact: ${fixture_provenance_path}"
+          echo "CHESSLENS_WAREHOUSE_PROVENANCE_PATH=${fixture_provenance_path}" >> "$GITHUB_ENV"
+
           first_json="$(uv run python -m chesslens.modeling.build_dataset \
             --config configs/modeling/fixture.yaml \
             --collection-root "$CHESSLENS_COLLECTION_ROOT" \
             --duckdb-path "$CHESSLENS_DUCKDB_PATH" \
+            --warehouse-provenance-path "$CHESSLENS_WAREHOUSE_PROVENANCE_PATH" \
             --output-root data/modeling)"
           echo "$first_json"
 
@@ -95,6 +166,7 @@ jobs:
             --config configs/modeling/fixture.yaml \
             --collection-root "$CHESSLENS_COLLECTION_ROOT" \
             --duckdb-path "$CHESSLENS_DUCKDB_PATH" \
+            --warehouse-provenance-path "$CHESSLENS_WAREHOUSE_PROVENANCE_PATH" \
             --output-root data/modeling)"
           echo "$second_json"
 
