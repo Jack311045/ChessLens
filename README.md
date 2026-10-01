@@ -10,6 +10,7 @@ This repository currently implements:
 - Phase 1.2b warehouse: DuckDB/dbt source registration, staging/intermediate/marts, and data quality tests for training-safe marts.
 - Phase 1.2c sharding: streaming, resumable, game-boundary-aware sharding and multi-session collection ingestion with preserved global game identity.
 - Phase 1.2d parallel ingestion: safe shard-level multiprocessing with a single-writer collection lock, in-order manifest commits, and process-tree memory telemetry.
+- Phase 2.1 modeling datasets: deterministic game sampling, leakage-aware temporal splits, player-holdout policy, policy/value labels, and staged idempotent publication.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 Phase 1 ETL and warehouse acceptance are complete, including 10M+ real-game processing and deterministic Tier-2 dbt validation.
@@ -34,11 +35,11 @@ Completed:
 - 10M+ game Parquet ETL (2017-01 collection acceptance complete);
 - DuckDB/dbt transformations and warehouse-style tests;
 - deterministic 10% sample validation using `mod(hash(game_id), 10000) < 1000`;
+- Phase 2.1 leakage-aware modeling dataset foundation with deterministic reuse checks;
 - Phase 1 acceptance evidence in `reports/acceptance/`.
 
 Not yet completed:
 
-- modeling datasets and leakage-aware train/validation/test splits;
 - frequency and logistic baselines;
 - LightGBM ranking baseline;
 - custom PyTorch multi-task ResNet;
@@ -60,7 +61,8 @@ Current flow in this phase:
 6. Publish completed datasets by renaming validated staging output into deterministic dataset paths.
 7. Validate published dataset roots and register DuckDB bronze views for dbt.
 8. Build dbt staging/intermediate/marts and enforce warehouse quality tests.
-9. Emit run manifest metrics for reproducibility and benchmarking.
+9. Build leakage-aware modeling datasets from `stg_games` + `int_move_context` using deterministic policy contracts.
+10. Emit versioned manifests and leakage audit metrics for reproducibility and benchmarking.
 
 Reproducibility semantics:
 
@@ -74,6 +76,7 @@ Reproducibility semantics:
 chesslens/
 ├── .github/workflows/ci.yml
 ├── configs/ingestion/
+├── configs/modeling/
 ├── data/
 │   ├── fixtures/
 │   ├── manifests/
@@ -85,6 +88,7 @@ chesslens/
 │   ├── domain/
 │   ├── features/
 │   ├── ingestion/
+│   ├── modeling/
 │   ├── warehouse/
 │   └── validation/
 └── tests/
@@ -131,6 +135,8 @@ Make targets:
 - `make ingest-2017-status`
 - `make ingest-2017-verify`
 - `make benchmark-shard-parallel-fixture`
+- `make modeling-fixture`
+- `make modeling-2017-sample`
 - `make test`
 - `make lint`
 - `make typecheck`
@@ -149,6 +155,7 @@ Windows direct equivalents:
 - `python -m uv run dbt docs generate --project-dir dbt --profiles-dir dbt`
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root <dataset-root> --output reports/benchmarks/ingestion_benchmark.json`
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root data/processed/datasets/c7703b6c4404e13814dedd4431146c09fd6a389843a400a7ea4c4e2ec40ab4a9 --output reports/benchmarks/ingestion_2013_01.json`
+- `python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml --collection-root <collection-root> --duckdb-path <duckdb-path> --output-root data/modeling`
 - `python -m uv run pytest -q`
 - `python -m uv run ruff check .`
 - `python -m uv run mypy src tests scripts`
@@ -245,6 +252,28 @@ python -m uv run python scripts/benchmark_parallel_shard_ingestion.py `
 	--workers 1,2,4 --output reports/benchmarks/phase12d_parallel_fixture.json
 ```
 
+## Phase 2.1 Modeling Dataset Workflow
+
+Build a leakage-aware modeling dataset from warehouse relations:
+
+```powershell
+python -m uv run python -m chesslens.modeling.build_dataset `
+	--config configs/modeling/fixture.yaml `
+	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+	--output-root data/modeling
+```
+
+Published modeling outputs are written under:
+
+- `data/modeling/datasets/<modeling_dataset_id>/game_assignments/temporal_split=.../part-*.parquet`
+- `data/modeling/datasets/<modeling_dataset_id>/policy_examples/temporal_split=.../part-*.parquet`
+- `data/modeling/datasets/<modeling_dataset_id>/leakage_audits/temporal_position_overlap.json`
+- `data/modeling/datasets/<modeling_dataset_id>/_manifest.json`
+
+Re-running the exact same effective configuration validates and reuses the existing
+published dataset rather than writing duplicates.
+
 ## Phase 1.2a Output Layout
 
 Completed datasets are published under `data/processed/datasets/<dataset_id>/`.
@@ -320,7 +349,11 @@ This report is a functional validation sample, not a statistical population stud
 - Property tests: randomized legal positions for encode/decode and determinism invariants.
 - Integration tests: streaming fixture replay, schema conformance, Arrow/Parquet round-trips.
 
-CI runs Ruff, mypy, and all Python tests first, then builds a fixture ingestion dataset and executes warehouse preflight + dbt `debug`/`compile`/`build`, then builds a fixture shard collection and runs the collection dbt build. CI never depends on local raw archives.
+CI runs Ruff, mypy, and all Python tests first, then builds a fixture ingestion
+dataset and executes warehouse preflight + dbt `debug`/`compile`/`build`, then
+builds a fixture shard collection and runs the collection dbt build, then executes
+the Phase 2.1 fixture modeling builder twice to verify deterministic idempotent
+reuse. CI never depends on local raw archives.
 
 ## Data Source and Licensing
 
@@ -337,12 +370,13 @@ Lichess database exports are published under CC0. Verify current terms at the of
 
 ## Limitations
 
-- Phase 1 ETL and warehouse validation are complete, but Phase 2+ modeling and deployment work is still pending.
+- Phase 1 ETL/warehouse and Phase 2.1 dataset foundations are complete, but model
+	training and deployment work are still pending.
 - No training metrics, serving latency, or cloud deployment metrics are claimed yet.
 
 ## Roadmap (Next Phases)
 
-1. Phase 2: modeling datasets, leakage-aware splits, and baseline models.
+1. Phase 2: baseline models on top of the completed leakage-aware modeling datasets.
 2. Phase 3: multi-task PyTorch training, ablations, calibration, and error analysis.
 3. Phase 4: model export, serving API, Docker packaging, and CI/CD hardening.
 4. Phase 5: cloud deployment, monitoring, and drift reporting.
@@ -362,3 +396,4 @@ Lichess database exports are published under CC0. Verify current terms at the of
 - Phase 1.2b walkthrough: `docs/learning/phase1_2b_dbt_sql_walkthrough.md`
 - Phase 1.2c walkthrough: `docs/learning/phase1_2c_resumable_sharding_walkthrough.md`
 - Phase 1.2d walkthrough: `docs/learning/phase1_2d_parallel_shard_ingestion_walkthrough.md`
+- Phase 2.1 walkthrough: `docs/learning/phase2_1_modeling_dataset_and_splits_walkthrough.md`

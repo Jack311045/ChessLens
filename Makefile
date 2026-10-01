@@ -1,6 +1,6 @@
 UV ?= uv
 
-.PHONY: setup fixture inspect-sample ingest-fixture ingest-2013-sample ingest-2013-full ingest-2017-full warehouse-preflight dbt-debug dbt-compile dbt-build dbt-docs benchmark-report benchmark-shard-parallel-fixture test lint typecheck shard-fixture shard-fixture-status ingest-fixture-shards collection-verify shard-2013-benchmark shard-2017-dry-run shard-2017 ingest-2017-shard ingest-2017-status ingest-2017-verify
+.PHONY: setup fixture inspect-sample ingest-fixture ingest-2013-sample ingest-2013-full ingest-2017-full warehouse-preflight dbt-debug dbt-compile dbt-build dbt-docs benchmark-report benchmark-shard-parallel-fixture modeling-fixture modeling-2017-sample test lint typecheck shard-fixture shard-fixture-status ingest-fixture-shards collection-verify shard-2013-benchmark shard-2017-dry-run shard-2017 ingest-2017-shard ingest-2017-status ingest-2017-verify
 
 setup:
 	$(UV) sync --dev
@@ -43,6 +43,12 @@ benchmark-report:
 
 benchmark-shard-parallel-fixture:
 	$(UV) run python scripts/benchmark_parallel_shard_ingestion.py --workers 1,2,4 --output reports/benchmarks/phase12d_parallel_fixture.json
+
+modeling-fixture:
+	$(UV) run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml
+
+modeling-2017-sample:
+	$(UV) run python -m chesslens.modeling.build_dataset --config configs/modeling/2017_01_sample.yaml
 
 # --- Phase 1.2c: resumable, game-boundary-aware sharding ---
 

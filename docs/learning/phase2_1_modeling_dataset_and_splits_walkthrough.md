@@ -1,0 +1,135 @@
+# Phase 2.1 Walkthrough: Modeling Dataset and Leakage-Aware Splits
+
+This walkthrough explains how ChessLens Phase 2.1 turns warehouse relations into
+reproducible supervised training data.
+
+## 1. What Phase 2.1 Produces
+
+The modeling builder publishes a versioned dataset root:
+
+- `game_assignments`: one row per selected game with split + holdout decisions.
+- `policy_examples`: one row per selected move with policy/value targets.
+- `novel_position_test`: subset of test rows with unseen positions vs train.
+- `leakage_audits`: overlap metrics for position leakage visibility.
+- `_manifest.json` + `_SUCCESS`: reproducibility and publication proof.
+
+Output path pattern:
+
+- `data/modeling/datasets/<modeling_dataset_id>/...`
+
+## 2. Inputs and Prerequisites
+
+Phase 2.1 expects warehouse relations already built from a validated collection:
+
+- `main.stg_games`
+- `main.int_move_context`
+
+Run order for fixture workflow:
+
+1. Build/verify fixture collection ingestion.
+2. Run warehouse preflight.
+3. Run dbt build.
+4. Run modeling dataset builder.
+
+## 3. Deterministic Sampling and Split Assignment
+
+Sampling is deterministic at game grain using hash-mod rules:
+
+- `selected = (hash(namespace|seed|game_id) % hash_modulus) < hash_threshold`
+
+Temporal split is assigned once per game from `played_date`:
+
+- train range
+- validation range
+- test range
+- explicit missing/invalid date policy
+
+All moves from a game inherit that game split.
+
+## 4. Player Holdout Policy
+
+Player-disjoint training eligibility is derived from deterministic hash rules over
+`white_player_hash` and `black_player_hash`.
+
+This supports experiments where some players are excluded from the core train
+population while preserving reproducibility.
+
+## 5. Label Construction
+
+For each selected move row:
+
+- `policy_target_action_index` is computed from `pre_move_fen` + `played_move_uci`.
+- `value_target_wdl` is derived from side-to-move and final game result.
+
+Validation guards ensure:
+
+- move legality at label time,
+- action index range `[0, 4671]`,
+- split consistency and uniqueness constraints.
+
+## 6. Leakage Audit and Novel Position Slice
+
+The builder computes overlap metrics between train/validation/test on `position_id`.
+
+It also emits `novel_position_test`, containing only test rows whose `position_id`
+does not appear in train.
+
+This provides a stricter generalization view than raw test alone.
+
+## 7. Stage -> Validate -> Publish
+
+Publication is safe and idempotent:
+
+1. Write into a unique staging directory.
+2. Validate relational and split invariants.
+3. Write manifest and `_SUCCESS`.
+4. Atomically move staging to final dataset path.
+
+If the same effective config is rerun, the builder validates identity fields and
+reuses the existing published dataset instead of duplicating work.
+
+## 8. Basic Commands
+
+Fixture config:
+
+```powershell
+python -m uv run python -m chesslens.modeling.build_dataset `
+  --config configs/modeling/fixture.yaml `
+  --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+  --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+  --output-root data/modeling
+```
+
+2017 sample config:
+
+```powershell
+python -m uv run python -m chesslens.modeling.build_dataset `
+  --config configs/modeling/2017_01_sample.yaml `
+  --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+  --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+  --output-root data/modeling
+```
+
+Optional controls:
+
+- `--max-games`
+- `--max-examples`
+- `--dry-run`
+- `--validate-only`
+
+## 9. Reading the Manifest Quickly
+
+Key fields to inspect in `_manifest.json`:
+
+- `modeling_dataset_id`
+- `identity_payload_sha256`
+- `upstream.collection_id`
+- `sampling` and `player_holdout` rule params
+- `counts` by split
+- `leakage_audit.metrics`
+- `datasets.<name>.<partition>.relative_files`
+
+For reproducibility claims, confirm both:
+
+- identity fields match intent,
+- status is `complete` and `_SUCCESS` exists.

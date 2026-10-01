@@ -1,0 +1,54 @@
+input:
+  collection_root: data/processed/collections/2017_01_collection
+  duckdb_path: data/tmp/chesslens_2017_01_collection.duckdb
+  expected_collection_id: null
+  move_context_relation: main.int_move_context
+  games_relation: main.stg_games
+
+versions:
+  modeling_pipeline_version: modeling_dataset_v1
+  split_definition_version: temporal_game_split_v1
+  feature_schema_version: policy_value_features_v1
+  label_definition_version: policy_value_labels_v1
+  schema_version: 1.1.0
+  position_normalization_version: fen4_legal_ep_v1
+  board_encoding_version: board18_abs_v1
+  action_encoding_version: action8x8x73_v1
+
+sampling:
+  rule_version: sha256_mod_v1
+  seed: 2017-01-sampling-v1
+  hash_modulus: 10000
+  hash_threshold: 1000
+  requested_rate_percent: 10.0
+  max_games: 500000
+
+splits:
+  train:
+    start_date: 2017-01-01
+    end_date: 2017-01-20
+  validation:
+    start_date: 2017-01-21
+    end_date: 2017-01-25
+  test:
+    start_date: 2017-01-26
+    end_date: 2017-01-31
+  missing_or_invalid_date_policy: assign_train
+
+player_holdout:
+  rule_version: sha256_mod_v1
+  seed: 2017-01-holdout-v1
+  hash_modulus: 10000
+  hash_threshold: 1000
+  requested_rate_percent: 10.0
+  missing_player_hash_policy: exclude_from_player_disjoint_training
+
+output:
+  output_root: data/modeling
+  batch_rows: 50000
+  max_examples: null
+  parquet_compression: zstd
+  parquet_row_group_size: 10000
+
+behavior:
+  strict: true
