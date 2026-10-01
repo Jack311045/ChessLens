@@ -553,3 +553,39 @@ Alternatives considered:
 Why not chosen:
 - No lock allows duplicate work and race windows.
 - Multi-writer manifests break atomicity and make reconciliation unsafe.
+
+## ADR-026: deterministic leakage-aware modeling dataset publication
+
+Context:
+- Supervised policy/value training needs reproducible dataset identity, explicit
+  temporal leakage controls, and safe publication semantics equivalent to ingestion.
+
+Decision:
+- Build Phase 2.1 datasets from warehouse relations (`stg_games`,
+  `int_move_context`) using game-level deterministic hash sampling.
+- Assign temporal split at game grain from `played_date` with a declared
+  missing/invalid date policy, then join move rows to those assignments.
+- Derive player-holdout eligibility from deterministic hash rules over anonymized
+  player hashes.
+- Publish two versioned datasets:
+  - `game_assignments` (one row per selected game),
+  - `policy_examples` (one row per selected move), plus `novel_position_test`.
+- Stage-write, validate, and atomically publish under
+  `data/modeling/datasets/<modeling_dataset_id>/` with manifest identity checks and
+  `_SUCCESS` markers.
+
+Consequences:
+- Re-running the same effective configuration reuses a validated completed dataset.
+- Train/validation/test split boundaries are explicit and auditable.
+- Leakage risk from repeated positions is measured via overlap audits and an
+  explicit novel-position test slice.
+
+Alternatives considered:
+- RNG-based sampling and split assignment per run.
+- Move-level split assignment independent of game boundaries.
+- Writing directly into final output paths during processing.
+
+Why not chosen:
+- RNG-based policies break reproducibility and idempotent reuse guarantees.
+- Move-level split assignment can leak game context across partitions.
+- Direct-to-final writes expose partial datasets and complicate recovery.

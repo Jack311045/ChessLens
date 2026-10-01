@@ -78,3 +78,34 @@ jobs:
 
       - name: Collection dbt build
         run: uv run dbt build --project-dir dbt --profiles-dir dbt
+
+      - name: Build fixture modeling dataset and verify idempotent reuse
+        shell: bash
+        run: |
+          mkdir -p data/modeling
+
+          first_json="$(uv run python -m chesslens.modeling.build_dataset \
+            --config configs/modeling/fixture.yaml \
+            --collection-root "$CHESSLENS_COLLECTION_ROOT" \
+            --duckdb-path "$CHESSLENS_DUCKDB_PATH" \
+            --output-root data/modeling)"
+          echo "$first_json"
+
+          first_reused="$(echo "$first_json" | python -c 'import json,sys; print(json.load(sys.stdin)["reused_existing"])')"
+          if [ "$first_reused" != "False" ]; then
+            echo "Expected first modeling run to build a dataset, got reused_existing=$first_reused" >&2
+            exit 1
+          fi
+
+          second_json="$(uv run python -m chesslens.modeling.build_dataset \
+            --config configs/modeling/fixture.yaml \
+            --collection-root "$CHESSLENS_COLLECTION_ROOT" \
+            --duckdb-path "$CHESSLENS_DUCKDB_PATH" \
+            --output-root data/modeling)"
+          echo "$second_json"
+
+          second_reused="$(echo "$second_json" | python -c 'import json,sys; print(json.load(sys.stdin)["reused_existing"])')"
+          if [ "$second_reused" != "True" ]; then
+            echo "Expected second modeling run to reuse dataset, got reused_existing=$second_reused" >&2
+            exit 1
+          fi

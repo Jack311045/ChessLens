@@ -8,6 +8,7 @@ __pycache__/
 data/raw/
 data/raw_shards/
 data/processed/
+data/modeling/
 data/interim/
 data/tmp/
 reports/sample_profile.json

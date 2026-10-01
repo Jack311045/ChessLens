@@ -440,3 +440,81 @@ Mutating sharded-ingestion runs are single-writer: a collection-scoped lock file
 created atomically before selecting pending shards and removed on completion. If a
 lock owner process is no longer alive, stale-lock recovery removes the stale lock and
 proceeds safely. Read-only status checks remain lock-free.
+
+## Modeling Dataset Contracts (Phase 2.1)
+
+Phase 2.1 publishes leakage-aware supervised modeling datasets under:
+
+- `data/modeling/datasets/<modeling_dataset_id>/game_assignments/...`
+- `data/modeling/datasets/<modeling_dataset_id>/policy_examples/...`
+- `data/modeling/datasets/<modeling_dataset_id>/leakage_audits/...`
+
+with staged-write, validation, and atomic publish semantics mirroring ingestion.
+
+### `game_assignments`
+
+Grain:
+
+- one row per selected game (`game_id`).
+
+Key fields:
+
+- `temporal_split` in `{train, validation, test}`;
+- `temporal_split_reason` describing direct date interval or policy assignment;
+- deterministic `sample_score_u64` from hash-rule sampling;
+- `is_player_holdout_game` and `player_disjoint_training_eligible` derived from
+	deterministic player-hash holdout policy.
+
+Invariants:
+
+- each selected `game_id` appears once;
+- temporal split assignment is game-level (all moves inherit game split);
+- held-out player hashes must not appear inside the player-disjoint training
+	population.
+
+### `policy_examples`
+
+Grain:
+
+- one row per selected move (`game_id`, `ply`).
+
+Target fields:
+
+- `played_move_uci_target`;
+- `policy_target_action_index` in `[0, 4671]`;
+- `value_target_wdl` in `{win, draw, loss}` from side-to-move + final result.
+
+Feature constraints:
+
+- pre-move board/context fields only;
+- post-outcome fields are present only as explicit targets/audit metadata;
+- schema + encoding + label version fields are persisted per row.
+
+### `novel_position_test` subset
+
+`policy_examples` additionally includes partition `temporal_split=novel_position_test`
+containing test rows whose `position_id` does not appear in train. This partition is
+diagnostic and complements full test-split evaluation.
+
+### Modeling manifest identity and reuse
+
+`modeling_dataset_id` is derived from:
+
+- upstream collection identity (`collection_id`, collection-manifest hash),
+- modeling/split/schema/encoding version identifiers,
+- sampling and player-holdout rule parameters,
+- split date ranges + missing-date policy,
+- output-affecting query/runtime options.
+
+Publication contract:
+
+- write to `data/modeling/staging/<modeling_dataset_id>__<run_id>/`;
+- validate uniqueness/split/holdout/range invariants and artifact existence;
+- write completed `_manifest.json` and `_SUCCESS`;
+- atomically move to `data/modeling/datasets/<modeling_dataset_id>/`.
+
+Reuse contract:
+
+- existing published dataset can be reused only when manifest identity fields match
+	expected values;
+- identity mismatch is a hard failure (tamper/staleness guard).
