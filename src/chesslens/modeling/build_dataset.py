@@ -491,7 +491,7 @@ def _open_validated_duckdb_connection(
             f"{config.input.duckdb_path.as_posix()}"
         )
 
-    connection = duckdb.connect(str(config.input.duckdb_path))
+    connection = duckdb.connect(str(config.input.duckdb_path), read_only=True)
     try:
         _ensure_relation_exists(connection, config.input.games_relation)
         _ensure_relation_exists(connection, config.input.move_context_relation)

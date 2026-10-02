@@ -12,6 +12,7 @@ data/modeling/
 data/interim/
 data/tmp/
 reports/sample_profile.json
+reports/local/
 
 # Large archives and databases
 *.pgn

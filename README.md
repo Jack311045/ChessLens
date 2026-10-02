@@ -294,17 +294,37 @@ Use existing Tier-2 acceptance evidence as sampling input:
 - `reports/acceptance/phase1_2_2017_tier2_sample_summary.json`
 - `reports/acceptance/phase1_2b_2017_dbt_summary.json`
 
-Find your real DuckDB path:
+Collection for this workflow:
+
+- `data/processed/collections/56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb`
+
+Local provenance output path (must be generated from the actual DuckDB snapshot):
+
+- `reports/local/phase2_1b_2017_tier2_warehouse_provenance.json`
+
+`reports/local/` is git-ignored. Do not commit generated local provenance as
+acceptance evidence until it has been generated from the actual DuckDB snapshot
+and relation counts are validated.
+
+Windows PowerShell real-data workflow (Phase 2.1b):
+
+1. Environment sync (safe, no ingestion/sharding/modeling execution):
+
+```powershell
+python -m uv sync --frozen --dev
+```
+
+2. Locate candidate DuckDB files:
 
 ```powershell
 Get-ChildItem data\tmp -Filter *.duckdb |
 	Select-Object FullName, Length, LastWriteTime
 ```
 
-Read-only relation inspection:
+3. Read-only relation inspection for candidate DuckDB files:
 
 ```powershell
-python -m uv run python - <<'PY'
+@'
 import duckdb
 from pathlib import Path
 
@@ -328,10 +348,15 @@ try:
 		print(f"{relation}: {count}")
 finally:
 	connection.close()
-PY
+'@ | python -m uv run python -
 ```
 
-Generate real warehouse provenance artifact:
+4. Select the DuckDB file that contains both required relations:
+
+- `main.stg_games`
+- `main.int_move_context`
+
+5. Generate real warehouse provenance from that selected DuckDB snapshot:
 
 ```powershell
 python -m uv run python -m chesslens.modeling.generate_warehouse_provenance `
@@ -344,13 +369,17 @@ python -m uv run python -m chesslens.modeling.generate_warehouse_provenance `
 	--output reports/local/phase2_1b_2017_tier2_warehouse_provenance.json
 ```
 
-Use the generated provenance in modeling commands:
+6. Set variables for modeling commands:
 
 ```powershell
 $env:CHESSLENS_COLLECTION_ROOT = "data/processed/collections/56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb"
 $env:CHESSLENS_DUCKDB_PATH = "REPLACE_WITH_FULL_DUCKDB_PATH"
 $env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH = "reports/local/phase2_1b_2017_tier2_warehouse_provenance.json"
+```
 
+7. Dry-run modeling (plan/check only):
+
+```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
 	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
@@ -358,14 +387,66 @@ python -m uv run python -m chesslens.modeling.build_dataset `
 	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
 	--output-root data/modeling `
 	--dry-run
+```
 
+8. Actual bounded modeling build (can be long-running):
+
+```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
 	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
 	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
 	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
 	--output-root data/modeling `
+	--max-games 5000 `
+	--max-examples 500000
+```
+
+9. Validate-only after the first real build exists:
+
+```powershell
+python -m uv run python -m chesslens.modeling.build_dataset `
+	--config configs/modeling/2017_01_sample.yaml `
+	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+	--output-root data/modeling `
+	--max-games 5000 `
+	--max-examples 500000 `
 	--validate-only
+```
+
+10. Idempotent reuse check (same build command again; expect `reused_existing=true`):
+
+```powershell
+python -m uv run python -m chesslens.modeling.build_dataset `
+	--config configs/modeling/2017_01_sample.yaml `
+	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+	--output-root data/modeling `
+	--max-games 5000 `
+	--max-examples 500000
+```
+
+11. Manifest inspection:
+
+```powershell
+$manifestPath = Join-Path data/modeling "datasets\REPLACE_WITH_MODELING_DATASET_ID\_manifest.json"
+Get-Content $manifestPath
+```
+
+```powershell
+@'
+import json
+from pathlib import Path
+
+manifest = json.loads(Path(r"REPLACE_WITH_MANIFEST_PATH").read_text(encoding="utf-8"))
+print("modeling_dataset_id:", manifest.get("modeling_dataset_id"))
+print("status:", manifest.get("status"))
+print("upstream:", manifest.get("upstream"))
+print("counts:", manifest.get("counts"))
+'@ | python -m uv run python -
 ```
 
 Published modeling outputs are written under:
