@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import inspect
 import json
 import os
@@ -59,6 +60,8 @@ from chesslens.modeling.validation import (
 )
 
 WDL_CLASS_ORDER: tuple[str, str, str] = ("win", "draw", "loss")
+DEFAULT_SAMPLED_EVAL_NEGATIVE_CAP = 31
+MAX_LEGAL_MOVES_UPPER_BOUND = 218
 
 POLICY_REQUIRED_COLUMNS: tuple[str, ...] = (
     "game_id",
@@ -194,7 +197,22 @@ class PreflightSummary:
     game_id_overlap_counts: dict[str, int]
     normalized_fen_overlap_counts: dict[str, int]
     player_overlap_counts: dict[str, int]
-    label_legality_checked_rows: int
+
+
+@dataclass(frozen=True)
+class LegalityValidationResult:
+    scope: str
+    checked_rows: int
+    checked_rows_by_split: dict[str, int]
+    status: str
+
+
+@dataclass(frozen=True)
+class TrainingPopulationSummary:
+    mode: str
+    full_train_row_count: int
+    eligible_train_row_count: int
+    training_row_count_used: int
 
 
 @dataclass(frozen=True)
@@ -249,6 +267,17 @@ def _stable_hash_u64(payload: str) -> int:
 def _safe_rmtree(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _load_manifest_identity(manifest_path: Path) -> tuple[dict[str, Any], str]:
@@ -408,9 +437,14 @@ def _player_overlap(
     return int(row[0])
 
 
-def _validate_label_legality(policy_paths_by_split: dict[str, list[Path]]) -> int:
+def _validate_label_legality_streaming(
+    policy_paths_by_split: dict[str, list[Path]],
+) -> LegalityValidationResult:
     checked = 0
+    checked_by_split: dict[str, int] = {}
+
     for split, paths in policy_paths_by_split.items():
+        split_checked = 0
         connection = duckdb.connect()
         try:
             cursor = connection.execute(
@@ -423,17 +457,54 @@ def _validate_label_legality(policy_paths_by_split: dict[str, list[Path]]) -> in
                     break
                 for game_id, ply, fen, target in rows:
                     checked += 1
+                    split_checked += 1
                     board = chess.Board(str(fen))
                     legal_indices = set(legal_move_indices(board))
                     if int(target) not in legal_indices:
                         raise RuntimeError(
                             "Illegal policy target action index in modeling dataset: "
+                            "scope=full, "
                             f"split={split}, game_id={game_id}, ply={ply}, target={target}"
                         )
         finally:
             connection.close()
+        checked_by_split[split] = split_checked
 
-    return checked
+    return LegalityValidationResult(
+        scope="full",
+        checked_rows=checked,
+        checked_rows_by_split=checked_by_split,
+        status="pass",
+    )
+
+
+def _validate_label_legality_selected(
+    selected_examples_by_split: dict[str, list[PositionExample]],
+) -> LegalityValidationResult:
+    checked = 0
+    checked_by_split: dict[str, int] = {}
+
+    for split, examples in selected_examples_by_split.items():
+        split_checked = 0
+        for example in examples:
+            checked += 1
+            split_checked += 1
+            board = chess.Board(example.pre_move_fen)
+            legal_indices = set(legal_move_indices(board))
+            if int(example.policy_target_action_index) not in legal_indices:
+                raise RuntimeError(
+                    "Illegal policy target action index in selected modeling rows: "
+                    f"scope=selected, split={split}, game_id={example.game_id}, "
+                    f"ply={example.ply}, target={example.policy_target_action_index}"
+                )
+        checked_by_split[split] = split_checked
+
+    return LegalityValidationResult(
+        scope="selected",
+        checked_rows=checked,
+        checked_rows_by_split=checked_by_split,
+        status="pass",
+    )
 
 
 def _preflight_modeling_dataset(config: BaselineConfig) -> PreflightSummary:
@@ -563,8 +634,6 @@ def _preflight_modeling_dataset(config: BaselineConfig) -> PreflightSummary:
         ),
     }
 
-    label_legality_checked_rows = _validate_label_legality(policy_paths_by_split)
-
     source_months = _distinct_source_months(policy_paths_by_split)
 
     return PreflightSummary(
@@ -583,7 +652,6 @@ def _preflight_modeling_dataset(config: BaselineConfig) -> PreflightSummary:
         game_id_overlap_counts=game_id_overlap_counts,
         normalized_fen_overlap_counts=normalized_fen_overlap_counts,
         player_overlap_counts=player_overlap_counts,
-        label_legality_checked_rows=label_legality_checked_rows,
     )
 
 
@@ -685,6 +753,164 @@ def _load_position_examples(
         examples.append(example)
 
     return examples
+
+
+def _sql_string_list(values: set[str]) -> str:
+    escaped = [item.replace("'", "''") for item in sorted(values)]
+    return "(" + ", ".join(f"'{item}'" for item in escaped) + ")"
+
+
+def _load_game_players_for_ids(
+    game_assignment_paths: list[Path],
+    game_ids: set[str],
+) -> dict[str, tuple[str | None, str | None]]:
+    if not game_ids:
+        return {}
+
+    sql_ids = _sql_string_list(game_ids)
+    query = (
+        "SELECT game_id, white_player_hash, black_player_hash "
+        "FROM read_parquet(" + _sql_file_list(game_assignment_paths) + ") "
+        "WHERE game_id IN " + sql_ids
+    )
+
+    connection = duckdb.connect()
+    try:
+        rows = connection.execute(query).fetchall()
+    finally:
+        connection.close()
+
+    payload: dict[str, tuple[str | None, str | None]] = {}
+    for game_id, white_hash, black_hash in rows:
+        payload[str(game_id)] = (
+            None if white_hash is None else str(white_hash),
+            None if black_hash is None else str(black_hash),
+        )
+    return payload
+
+
+def _player_hashes_for_examples(
+    examples_by_split: dict[str, list[PositionExample]],
+    game_assignment_paths_by_split: dict[str, list[Path]],
+) -> set[str]:
+    player_hashes: set[str] = set()
+    for split, examples in examples_by_split.items():
+        game_ids = {example.game_id for example in examples}
+        game_players = _load_game_players_for_ids(
+            game_assignment_paths_by_split[split],
+            game_ids,
+        )
+        missing = sorted(game_ids - set(game_players))
+        if missing:
+            raise RuntimeError(
+                "Game assignment rows missing for selected examples in split "
+                f"{split!r}: {', '.join(missing[:5])}"
+            )
+        for white_hash, black_hash in game_players.values():
+            if white_hash:
+                player_hashes.add(white_hash)
+            if black_hash:
+                player_hashes.add(black_hash)
+    return player_hashes
+
+
+def _select_training_population(
+    train_examples: list[PositionExample],
+    *,
+    mode: str,
+    all_selected_examples_by_split: dict[str, list[PositionExample]],
+    game_assignment_paths_by_split: dict[str, list[Path]],
+) -> tuple[list[PositionExample], TrainingPopulationSummary]:
+    full_count = len(train_examples)
+    eligible_train_examples = [
+        example for example in train_examples if example.player_disjoint_training_eligible
+    ]
+    eligible_count = len(eligible_train_examples)
+
+    if mode == "player_disjoint":
+        if not eligible_train_examples:
+            raise RuntimeError(
+                "player_disjoint training population selected zero eligible train rows"
+            )
+        if any(example.is_player_holdout_game for example in eligible_train_examples):
+            raise RuntimeError(
+                "player_disjoint training population contains holdout-flagged rows"
+            )
+
+        heldout_examples_by_split = {
+            split: [example for example in examples if example.is_player_holdout_game]
+            for split, examples in all_selected_examples_by_split.items()
+        }
+        heldout_players = _player_hashes_for_examples(
+            heldout_examples_by_split,
+            game_assignment_paths_by_split,
+        )
+        eligible_players = _player_hashes_for_examples(
+            {"train": eligible_train_examples},
+            game_assignment_paths_by_split,
+        )
+
+        overlap = sorted(heldout_players & eligible_players)
+        if overlap:
+            raise RuntimeError(
+                "Held-out player overlap detected in player_disjoint training population"
+            )
+
+        selected = eligible_train_examples
+    else:
+        selected = train_examples
+
+    summary = TrainingPopulationSummary(
+        mode=mode,
+        full_train_row_count=full_count,
+        eligible_train_row_count=eligible_count,
+        training_row_count_used=len(selected),
+    )
+    return selected, summary
+
+
+def _run_legality_validation(
+    *,
+    scope: str,
+    policy_paths_by_split: dict[str, list[Path]],
+    selected_examples_by_split: dict[str, list[PositionExample]],
+    dry_run: bool,
+) -> LegalityValidationResult:
+    if dry_run:
+        return LegalityValidationResult(
+            scope=scope,
+            checked_rows=0,
+            checked_rows_by_split={"train": 0, "validation": 0, "test": 0},
+            status="not_run_dry_run",
+        )
+    if scope == "full":
+        return _validate_label_legality_streaming(policy_paths_by_split)
+    if scope == "selected":
+        return _validate_label_legality_selected(selected_examples_by_split)
+    raise RuntimeError(f"Unsupported legality scope: {scope!r}")
+
+
+def _estimated_candidate_rows(
+    selected_position_count: int,
+    *,
+    include_all_candidates: bool,
+    sampled_negative_cap: int | None,
+) -> int:
+    if selected_position_count <= 0:
+        return 0
+    if include_all_candidates or sampled_negative_cap is None:
+        return selected_position_count * MAX_LEGAL_MOVES_UPPER_BOUND
+    return selected_position_count * (1 + sampled_negative_cap)
+
+
+def _memory_risk_category(total_candidate_rows: int) -> str:
+    if total_candidate_rows <= 200_000:
+        return "low"
+    if total_candidate_rows <= 1_000_000:
+        return "moderate"
+    if total_candidate_rows <= 5_000_000:
+        return "high"
+    return "very_high"
 
 
 def _material_points(piece_type: int) -> int:
@@ -859,7 +1085,7 @@ class FrequencyPolicyModel:
 
 @dataclass(frozen=True)
 class FrequencyScore:
-    level: int
+    level: str
     count: int
     score: float
 
@@ -889,20 +1115,31 @@ def _fit_frequency_model(train_examples: list[PositionExample]) -> FrequencyPoli
 def _frequency_score(
     model: FrequencyPolicyModel,
     *,
+    backoff_levels: tuple[str, ...],
     rating_band_value: str,
     phase: str,
     action: int,
 ) -> FrequencyScore:
-    count1 = model.level1_counts.get((rating_band_value, phase, action), 0)
-    if count1 > 0:
-        return FrequencyScore(level=1, count=count1, score=3_000_000.0 + float(count1))
+    def count_for_level(level_name: str) -> int:
+        if level_name == "rating_band_phase":
+            return model.level1_counts.get((rating_band_value, phase, action), 0)
+        if level_name == "phase":
+            return model.level2_counts.get((phase, action), 0)
+        if level_name == "global":
+            return model.global_counts.get(action, 0)
+        raise RuntimeError(f"Unsupported frequency backoff level: {level_name!r}")
 
-    count2 = model.level2_counts.get((phase, action), 0)
-    if count2 > 0:
-        return FrequencyScore(level=2, count=count2, score=2_000_000.0 + float(count2))
+    for index, level_name in enumerate(backoff_levels):
+        count = count_for_level(level_name)
+        if count > 0 or level_name == "global":
+            priority = len(backoff_levels) - index
+            return FrequencyScore(
+                level=level_name,
+                count=count,
+                score=(float(priority) * 1_000_000.0) + float(count),
+            )
 
-    global_count = model.global_counts.get(action, 0)
-    return FrequencyScore(level=3, count=global_count, score=1_000_000.0 + float(global_count))
+    raise RuntimeError("Frequency scoring failed to select a fallback level")
 
 
 def _sample_negative_actions(
@@ -928,6 +1165,7 @@ def _build_candidate_groups(
     split: str,
     include_all_candidates: bool,
     max_negative_candidates_per_train_position: int | None,
+    sampled_negative_cap_for_non_train: int | None,
     seed: int,
 ) -> list[CandidateGroup]:
     groups: list[CandidateGroup] = []
@@ -974,7 +1212,16 @@ def _build_candidate_groups(
         elif include_all_candidates:
             selected_actions = set(legal_actions)
         else:
-            selected_actions = set(negatives)
+            if sampled_negative_cap_for_non_train is None:
+                selected_actions = set(negatives)
+            else:
+                sampled = _sample_negative_actions(
+                    group_id=group_id,
+                    negatives=negatives,
+                    max_negatives=sampled_negative_cap_for_non_train,
+                    seed=seed,
+                )
+                selected_actions = set(sampled)
             selected_actions.add(example.policy_target_action_index)
 
         action_indices: list[int] = []
@@ -1077,6 +1324,8 @@ def _ranking_groups_from_scores(
 def _evaluate_frequency(
     model: FrequencyPolicyModel,
     groups: list[CandidateGroup],
+    *,
+    backoff_levels: tuple[str, ...],
 ) -> list[RankingGroup]:
     output: list[RankingGroup] = []
     for group in groups:
@@ -1084,7 +1333,13 @@ def _evaluate_frequency(
         phase = str(group.metadata.get("game_phase", "unknown"))
         scores: list[float] = []
         for action in group.action_indices:
-            score = _frequency_score(model, rating_band_value=rb, phase=phase, action=action)
+            score = _frequency_score(
+                model,
+                backoff_levels=backoff_levels,
+                rating_band_value=rb,
+                phase=phase,
+                action=action,
+            )
             scores.append(score.score)
 
         output.append(
@@ -1508,6 +1763,24 @@ def _logistic_subgroups(
     return payload
 
 
+def _player_holdout_interpretation(training_population_mode: str) -> str:
+    if training_population_mode == "player_disjoint":
+        return "player_disjoint"
+    return "descriptive_only_not_player_disjoint"
+
+
+def _annotate_player_holdout_subgroup(
+    payload: dict[str, Any],
+    *,
+    interpretation: str,
+) -> dict[str, Any]:
+    player_holdout = payload.get("player_holdout_true")
+    if isinstance(player_holdout, dict):
+        player_holdout["interpretation"] = interpretation
+    payload["player_holdout_interpretation"] = interpretation
+    return payload
+
+
 def _prediction_samples(
     *,
     ranking_groups: list[RankingGroup],
@@ -1619,11 +1892,53 @@ def _validate_existing_experiment(
         "baseline_report.md",
     ]
 
-    missing = [name for name in required_files if not (experiment_path / name).exists()]
+    integrity_payload = manifest.get("artifact_integrity")
+    if not isinstance(integrity_payload, dict):
+        raise RuntimeError("Existing experiment manifest missing artifact_integrity payload")
+
+    missing = [name for name in required_files if name not in integrity_payload]
     if missing:
         raise RuntimeError(
-            "Existing experiment is incomplete; missing artifacts: " + ", ".join(missing)
+            "Existing experiment manifest is incomplete; missing artifact_integrity entries: "
+            + ", ".join(missing)
         )
+
+    for file_name, record in sorted(integrity_payload.items()):
+        if not isinstance(record, dict):
+            raise RuntimeError(
+                f"Existing experiment artifact_integrity entry is invalid for {file_name!r}"
+            )
+
+        expected_sha = str(record.get("sha256", "")).strip()
+        expected_size = record.get("size_bytes")
+        if not expected_sha:
+            raise RuntimeError(
+                f"Existing experiment artifact_integrity entry missing sha256 for {file_name!r}"
+            )
+        if not isinstance(expected_size, int) or expected_size < 0:
+            raise RuntimeError(
+                f"Existing experiment artifact_integrity entry has invalid size for {file_name!r}"
+            )
+
+        artifact_path = experiment_path / file_name
+        if not artifact_path.exists():
+            raise RuntimeError(
+                f"Existing experiment is incomplete; missing artifact file {file_name!r}"
+            )
+
+        actual_size = artifact_path.stat().st_size
+        if actual_size != expected_size:
+            raise RuntimeError(
+                "Existing experiment artifact integrity mismatch (size): "
+                f"{file_name!r} expected={expected_size} actual={actual_size}"
+            )
+
+        actual_sha = _file_sha256(artifact_path)
+        if actual_sha != expected_sha:
+            raise RuntimeError(
+                "Existing experiment artifact integrity mismatch (sha256): "
+                f"{file_name!r} expected={expected_sha} actual={actual_sha}"
+            )
 
     return manifest
 
@@ -1702,6 +2017,62 @@ def run_baselines(
     if not test_examples:
         raise RuntimeError("No test examples selected for baseline evaluation")
 
+    selected_examples_by_split = {
+        "train": train_examples,
+        "validation": validation_examples,
+        "test": test_examples,
+    }
+
+    training_examples, training_population_summary = _select_training_population(
+        train_examples,
+        mode=config.training_population.mode,
+        all_selected_examples_by_split=selected_examples_by_split,
+        game_assignment_paths_by_split=preflight.game_assignment_paths_by_split,
+    )
+
+    if not training_examples:
+        raise RuntimeError("No training examples available after training population selection")
+
+    sampled_eval_negative_cap = (
+        config.limits.max_negative_candidates_per_train_position
+        if config.limits.max_negative_candidates_per_train_position is not None
+        else DEFAULT_SAMPLED_EVAL_NEGATIVE_CAP
+    )
+    evaluation_publishable = (
+        config.limits.evaluate_all_legal_candidates_validation
+        and config.limits.evaluate_all_legal_candidates_test
+    )
+    evaluation_candidate_mode = (
+        "publishable_all_candidates"
+        if evaluation_publishable
+        else "non_publishable_sampled_candidates"
+    )
+
+    train_group_estimate = _estimated_candidate_rows(
+        training_population_summary.training_row_count_used,
+        include_all_candidates=False,
+        sampled_negative_cap=config.limits.max_negative_candidates_per_train_position,
+    )
+    validation_group_estimate = _estimated_candidate_rows(
+        len(validation_examples),
+        include_all_candidates=config.limits.evaluate_all_legal_candidates_validation,
+        sampled_negative_cap=(
+            None
+            if config.limits.evaluate_all_legal_candidates_validation
+            else sampled_eval_negative_cap
+        ),
+    )
+    test_group_estimate = _estimated_candidate_rows(
+        len(test_examples),
+        include_all_candidates=config.limits.evaluate_all_legal_candidates_test,
+        sampled_negative_cap=(
+            None if config.limits.evaluate_all_legal_candidates_test else sampled_eval_negative_cap
+        ),
+    )
+    total_estimated_candidate_rows = (
+        train_group_estimate + validation_group_estimate + test_group_estimate
+    )
+
     base_output_root = config.output.output_root
     git_commit = _git_commit()
 
@@ -1737,16 +2108,11 @@ def run_baselines(
             summary=None,
         )
 
-    train_group_estimate = sum(
-        chess.Board(item.pre_move_fen).legal_moves.count()
-        for item in train_examples
-    )
-    validation_group_estimate = sum(
-        chess.Board(item.pre_move_fen).legal_moves.count() for item in validation_examples
-    )
-    test_group_estimate = sum(
-        chess.Board(item.pre_move_fen).legal_moves.count()
-        for item in test_examples
+    legality_validation = _run_legality_validation(
+        scope=config.preflight.legality_scope,
+        policy_paths_by_split=preflight.policy_paths_by_split,
+        selected_examples_by_split=selected_examples_by_split,
+        dry_run=dry_run,
     )
 
     if dry_run:
@@ -1756,16 +2122,41 @@ def run_baselines(
             "validate_only": False,
             "modeling_manifest_path": _display_path(preflight.modeling_manifest_path),
             "modeling_dataset_id": preflight.modeling_dataset_id,
+            "training_population": {
+                "mode": training_population_summary.mode,
+                "full_train_row_count": training_population_summary.full_train_row_count,
+                "eligible_train_row_count": training_population_summary.eligible_train_row_count,
+                "training_row_count_used": training_population_summary.training_row_count_used,
+            },
             "split_row_counts_full": preflight.split_row_counts,
             "split_row_counts_selected": {
                 "train": len(train_examples),
                 "validation": len(validation_examples),
                 "test": len(test_examples),
             },
+            "legality_validation": {
+                "scope": legality_validation.scope,
+                "checked_rows": legality_validation.checked_rows,
+                "checked_rows_by_split": legality_validation.checked_rows_by_split,
+                "status": legality_validation.status,
+            },
             "estimated_candidate_rows": {
                 "train": train_group_estimate,
                 "validation": validation_group_estimate,
                 "test": test_group_estimate,
+                "total": total_estimated_candidate_rows,
+            },
+            "evaluation_candidate_mode": {
+                "mode": evaluation_candidate_mode,
+                "evaluate_all_legal_candidates_validation": (
+                    config.limits.evaluate_all_legal_candidates_validation
+                ),
+                "evaluate_all_legal_candidates_test": (
+                    config.limits.evaluate_all_legal_candidates_test
+                ),
+                "sampled_negative_cap_when_not_all_candidates": (
+                    sampled_eval_negative_cap
+                ),
             },
             "selected_limits": {
                 "max_train_positions": config.limits.max_train_positions,
@@ -1775,9 +2166,10 @@ def run_baselines(
                     config.limits.max_negative_candidates_per_train_position
                 ),
             },
+            "estimated_memory_risk_category": _memory_risk_category(total_estimated_candidate_rows),
             "estimated_memory_note": (
-                "Candidate rows scale with legal move count per position; "
-                "reduce max_*_positions if memory is constrained."
+                "Approximate category from selected candidate rows; "
+                "reduce max_*_positions or negative caps if memory is constrained."
             ),
             "estimated_disk_note": (
                 "Prediction artifact rows are capped by output.prediction_artifact_row_limit."
@@ -1803,6 +2195,22 @@ def run_baselines(
         "player_overlap_counts": preflight.player_overlap_counts,
         "feature_allowlist": sorted(FEATURE_DEFINITIONS),
         "forbidden_feature_registry": list(FORBIDDEN_FEATURE_COLUMNS),
+        "training_population": {
+            "mode": training_population_summary.mode,
+            "full_train_row_count": training_population_summary.full_train_row_count,
+            "eligible_train_row_count": training_population_summary.eligible_train_row_count,
+            "training_row_count_used": training_population_summary.training_row_count_used,
+        },
+        "candidate_evaluation_mode": {
+            "mode": evaluation_candidate_mode,
+            "evaluate_all_legal_candidates_validation": (
+                config.limits.evaluate_all_legal_candidates_validation
+            ),
+            "evaluate_all_legal_candidates_test": (
+                config.limits.evaluate_all_legal_candidates_test
+            ),
+            "sampled_negative_cap_when_not_all_candidates": sampled_eval_negative_cap,
+        },
         "confirmations": {
             "frequency_counts_use_train_only": True,
             "preprocessing_fit_on_train_only": True,
@@ -1823,8 +2231,10 @@ def run_baselines(
             ),
         },
         "label_legality": {
-            "checked_rows": preflight.label_legality_checked_rows,
-            "status": "pass",
+            "scope": legality_validation.scope,
+            "checked_rows": legality_validation.checked_rows,
+            "checked_rows_by_split": legality_validation.checked_rows_by_split,
+            "status": legality_validation.status,
         },
     }
 
@@ -1836,6 +2246,12 @@ def run_baselines(
             "validate_only": True,
             "modeling_manifest_path": _display_path(preflight.modeling_manifest_path),
             "modeling_dataset_id": preflight.modeling_dataset_id,
+            "training_population": {
+                "mode": training_population_summary.mode,
+                "full_train_row_count": training_population_summary.full_train_row_count,
+                "eligible_train_row_count": training_population_summary.eligible_train_row_count,
+                "training_row_count_used": training_population_summary.training_row_count_used,
+            },
             "split_row_counts_full": preflight.split_row_counts,
             "split_row_counts_selected": {
                 "train": len(train_examples),
@@ -1869,10 +2285,11 @@ def run_baselines(
 
     try:
         train_groups = _build_candidate_groups(
-            train_examples,
+            training_examples,
             split="train",
             include_all_candidates=False,
             max_negative_candidates_per_train_position=config.limits.max_negative_candidates_per_train_position,
+            sampled_negative_cap_for_non_train=None,
             seed=config.runtime.seed,
         )
 
@@ -1881,6 +2298,11 @@ def run_baselines(
             split="validation",
             include_all_candidates=config.limits.evaluate_all_legal_candidates_validation,
             max_negative_candidates_per_train_position=None,
+            sampled_negative_cap_for_non_train=(
+                None
+                if config.limits.evaluate_all_legal_candidates_validation
+                else sampled_eval_negative_cap
+            ),
             seed=config.runtime.seed,
         )
 
@@ -1889,12 +2311,25 @@ def run_baselines(
             split="test",
             include_all_candidates=config.limits.evaluate_all_legal_candidates_test,
             max_negative_candidates_per_train_position=None,
+            sampled_negative_cap_for_non_train=(
+                None
+                if config.limits.evaluate_all_legal_candidates_test
+                else sampled_eval_negative_cap
+            ),
             seed=config.runtime.seed,
         )
 
-        frequency_model = _fit_frequency_model(train_examples)
-        frequency_validation_ranked = _evaluate_frequency(frequency_model, validation_groups)
-        frequency_test_ranked = _evaluate_frequency(frequency_model, test_groups)
+        frequency_model = _fit_frequency_model(training_examples)
+        frequency_validation_ranked = _evaluate_frequency(
+            frequency_model,
+            validation_groups,
+            backoff_levels=config.frequency.backoff_levels,
+        )
+        frequency_test_ranked = _evaluate_frequency(
+            frequency_model,
+            test_groups,
+            backoff_levels=config.frequency.backoff_levels,
+        )
 
         freq_validation_metrics = compute_ranking_metrics(
             frequency_validation_ranked,
@@ -1906,7 +2341,7 @@ def run_baselines(
         )
 
         logistic_pipeline = _fit_logistic_pipeline(
-            train_examples,
+            training_examples,
             seed=config.runtime.seed,
             c=config.logistic.c,
             max_iter=config.logistic.max_iter,
@@ -1994,19 +2429,31 @@ def run_baselines(
             config.evaluation.ranking_cutoffs,
         )
 
+        player_holdout_interpretation = _player_holdout_interpretation(
+            training_population_summary.mode
+        )
         subgroup_metrics = {
-            "ranking_frequency_test": _ranking_subgroups(
-                frequency_test_ranked,
-                config.evaluation.ranking_cutoffs,
+            "ranking_frequency_test": _annotate_player_holdout_subgroup(
+                _ranking_subgroups(
+                    frequency_test_ranked,
+                    config.evaluation.ranking_cutoffs,
+                ),
+                interpretation=player_holdout_interpretation,
             ),
-            "ranking_lightgbm_test": _ranking_subgroups(
-                lgb_test_ranked,
-                config.evaluation.ranking_cutoffs,
+            "ranking_lightgbm_test": _annotate_player_holdout_subgroup(
+                _ranking_subgroups(
+                    lgb_test_ranked,
+                    config.evaluation.ranking_cutoffs,
+                ),
+                interpretation=player_holdout_interpretation,
             ),
-            "logistic_wdl_test": _logistic_subgroups(
-                test_examples,
-                logistic_test_probs,
-                ece_bins=config.evaluation.ece_bins,
+            "logistic_wdl_test": _annotate_player_holdout_subgroup(
+                _logistic_subgroups(
+                    test_examples,
+                    logistic_test_probs,
+                    ece_bins=config.evaluation.ece_bins,
+                ),
+                interpretation=player_holdout_interpretation,
             ),
         }
 
@@ -2032,6 +2479,23 @@ def run_baselines(
         }
 
         aggregate_metrics = {
+            "evaluation_candidate_mode": {
+                "mode": evaluation_candidate_mode,
+                "publishable": evaluation_publishable,
+                "evaluate_all_legal_candidates_validation": (
+                    config.limits.evaluate_all_legal_candidates_validation
+                ),
+                "evaluate_all_legal_candidates_test": (
+                    config.limits.evaluate_all_legal_candidates_test
+                ),
+                "sampled_negative_cap_when_not_all_candidates": sampled_eval_negative_cap,
+            },
+            "training_population": {
+                "mode": training_population_summary.mode,
+                "full_train_row_count": training_population_summary.full_train_row_count,
+                "eligible_train_row_count": training_population_summary.eligible_train_row_count,
+                "training_row_count_used": training_population_summary.training_row_count_used,
+            },
             "frequency_policy": {
                 "validation": freq_validation_metrics,
                 "test": freq_test_metrics,
@@ -2226,13 +2690,29 @@ def run_baselines(
                 ),
                 f"- player overlaps: {json.dumps(preflight.player_overlap_counts, sort_keys=True)}",
                 "",
+                "## Selected run policy",
+                f"- training_population.mode: {training_population_summary.mode}",
+                (
+                    "- train rows (full/eligible/used): "
+                    f"{training_population_summary.full_train_row_count}/"
+                    f"{training_population_summary.eligible_train_row_count}/"
+                    f"{training_population_summary.training_row_count_used}"
+                ),
+                f"- evaluation candidate mode: {evaluation_candidate_mode}",
+                (
+                    "- legality validation: "
+                    f"scope={legality_validation.scope}, "
+                    f"checked_rows={legality_validation.checked_rows}, "
+                    f"status={legality_validation.status}"
+                ),
+                "",
                 "## Confirmations",
                 "- frequency counts fit on train only: yes",
                 "- preprocessing fit on train only: yes",
                 "- LightGBM early stopping uses validation only: yes",
                 "- test not used for fit/selection: yes",
                 "- forbidden features rejected: yes",
-                "- policy target legality checked: yes",
+                "- policy target legality checked at configured scope: yes",
             ]
         )
         (staging_root / "leakage_audit.md").write_text(leakage_audit_md + "\n", encoding="utf-8")
@@ -2248,6 +2728,9 @@ def run_baselines(
                 f"- modeling_dataset_id: {preflight.modeling_dataset_id}",
                 f"- experiment_id: {experiment_id}",
                 f"- run_id: {run_id}",
+                f"- training_population.mode: {training_population_summary.mode}",
+                f"- legality_scope: {legality_validation.scope}",
+                f"- evaluation_candidate_mode: {evaluation_candidate_mode}",
                 "",
                 "## Policy ranking comparison (validation vs test)",
                 (
@@ -2311,6 +2794,13 @@ def run_baselines(
             for p in staging_root.iterdir()
             if p.is_file() and p.name not in {"_manifest.json", "_SUCCESS"}
         )
+        artifact_integrity = {
+            file_name: {
+                "size_bytes": int((staging_root / file_name).stat().st_size),
+                "sha256": _file_sha256(staging_root / file_name),
+            }
+            for file_name in artifact_files
+        }
 
         manifest = {
             "status": "complete",
@@ -2333,6 +2823,14 @@ def run_baselines(
                     "validation": len(validation_examples),
                     "test": len(test_examples),
                 },
+                "training_population": {
+                    "mode": training_population_summary.mode,
+                    "full_train_row_count": training_population_summary.full_train_row_count,
+                    "eligible_train_row_count": (
+                        training_population_summary.eligible_train_row_count
+                    ),
+                    "training_row_count_used": training_population_summary.training_row_count_used,
+                },
                 "candidate_groups": {
                     "train": len(train_groups),
                     "validation": len(validation_groups),
@@ -2343,6 +2841,23 @@ def run_baselines(
                     "validation": int(sum(len(g.labels) for g in validation_groups)),
                     "test": int(sum(len(g.labels) for g in test_groups)),
                 },
+            },
+            "legality_validation": {
+                "scope": legality_validation.scope,
+                "checked_rows": legality_validation.checked_rows,
+                "checked_rows_by_split": legality_validation.checked_rows_by_split,
+                "status": legality_validation.status,
+            },
+            "evaluation_candidate_mode": {
+                "mode": evaluation_candidate_mode,
+                "publishable": evaluation_publishable,
+                "evaluate_all_legal_candidates_validation": (
+                    config.limits.evaluate_all_legal_candidates_validation
+                ),
+                "evaluate_all_legal_candidates_test": (
+                    config.limits.evaluate_all_legal_candidates_test
+                ),
+                "sampled_negative_cap_when_not_all_candidates": sampled_eval_negative_cap,
             },
             "versions": {
                 "baseline_pipeline_version": config.versions.baseline_pipeline_version,
@@ -2358,6 +2873,7 @@ def run_baselines(
             "created_at_utc": _utc_now_iso(),
             "git_commit": git_commit,
             "artifacts": artifact_files,
+            "artifact_integrity": artifact_integrity,
         }
 
         atomic_write_json(staging_root / "_manifest.json", manifest)

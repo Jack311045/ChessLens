@@ -10,16 +10,22 @@ versions:
 
 runtime:
   seed: 20240131
-  threads: 8
+  threads: 4
   early_stopping_rounds: 50
 
 limits:
-  max_train_positions: 250000
-  max_validation_positions: 75000
-  max_test_positions: 75000
-  max_negative_candidates_per_train_position: 128
+  max_train_positions: 25000
+  max_validation_positions: 5000
+  max_test_positions: 5000
+  max_negative_candidates_per_train_position: 31
   evaluate_all_legal_candidates_validation: true
   evaluate_all_legal_candidates_test: true
+
+training_population:
+  mode: player_disjoint
+
+preflight:
+  legality_scope: selected
 
 frequency:
   backoff_levels:
@@ -46,11 +52,11 @@ evaluation:
     - 3
     - 5
   ece_bins: 15
-  bootstrap_iterations: 1000
+  bootstrap_iterations: 200
 
 output:
   output_root: data/baselines
-  prediction_artifact_row_limit: 250000
+  prediction_artifact_row_limit: 25000
 
 behavior:
   strict: true
