@@ -91,7 +91,8 @@ jobs:
             --games-relation main.stg_games \
             --move-context-relation main.int_move_context \
             --warehouse-kind fixture \
-            --output "$fixture_provenance_path"
+            --output "$fixture_provenance_path" \
+            --allow-overwrite-incompatible
 
           echo "Fixture warehouse provenance artifact: ${fixture_provenance_path}"
           if [ -z "$fixture_provenance_path" ]; then
