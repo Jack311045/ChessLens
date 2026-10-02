@@ -12,6 +12,7 @@ This repository currently implements:
 - Phase 1.2d parallel ingestion: safe shard-level multiprocessing with a single-writer collection lock, in-order manifest commits, and process-tree memory telemetry.
 - Phase 2.1 modeling datasets: deterministic game sampling, leakage-aware temporal splits, player-holdout policy, policy/value labels, and staged idempotent publication.
 - Phase 2.1b provenance hardening: typed warehouse provenance identity, DuckDB snapshot validation, and two-stage sampling manifest semantics.
+- Phase 2.2 classical baselines: frequency policy ranking, multinomial logistic value baseline, and LightGBM ranking with leakage-audited staged publication.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 Phase 1 ETL and warehouse acceptance are complete, including 10M+ real-game processing and deterministic Tier-2 dbt validation.
@@ -38,12 +39,11 @@ Completed:
 - deterministic 10% sample validation using `mod(hash(game_id), 10000) < 1000`;
 - Phase 2.1 leakage-aware modeling dataset foundation with deterministic reuse checks;
 - Phase 2.1b upstream warehouse provenance hardening for safe modeling identity/reuse;
+- Phase 2.2 reproducible classical baseline training/evaluation artifacts with idempotent experiment reuse;
 - Phase 1 acceptance evidence in `reports/acceptance/`.
 
 Not yet completed:
 
-- frequency and logistic baselines;
-- LightGBM ranking baseline;
 - custom PyTorch multi-task ResNet;
 - calibration, ablations, and error analysis;
 - MLflow and Optuna experiment workflows;
@@ -77,6 +77,7 @@ Reproducibility semantics:
 ```text
 chesslens/
 ├── .github/workflows/ci.yml
+├── configs/baselines/
 ├── configs/ingestion/
 ├── configs/modeling/
 ├── data/
@@ -139,6 +140,8 @@ Make targets:
 - `make benchmark-shard-parallel-fixture`
 - `make modeling-fixture`
 - `make modeling-2017-sample`
+- `make baselines-fixture-smoke`
+- `make baselines-local`
 - `make test`
 - `make lint`
 - `make typecheck`
@@ -159,6 +162,7 @@ Windows direct equivalents:
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root data/processed/datasets/c7703b6c4404e13814dedd4431146c09fd6a389843a400a7ea4c4e2ec40ab4a9 --output reports/benchmarks/ingestion_2013_01.json`
 - `python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml --collection-root <collection-root> --duckdb-path <duckdb-path> --warehouse-provenance-path <warehouse-provenance-path> --output-root data/modeling`
 - `python -m uv run python -m chesslens.modeling.generate_warehouse_provenance --collection-root <collection-root> --duckdb-path <duckdb-path> --games-relation main.stg_games --move-context-relation main.int_move_context --warehouse-kind <full|deterministic_sample|fixture> --output <output-json-path>`
+- `python -m uv run python -m chesslens.modeling.run_baselines --config configs/baselines/fixture_smoke.yaml --modeling-manifest <modeling_manifest_path>`
 - `python -m uv run pytest -q`
 - `python -m uv run ruff check .`
 - `python -m uv run mypy src tests scripts`
@@ -305,6 +309,39 @@ Local provenance output path (must be generated from the actual DuckDB snapshot)
 `reports/local/` is git-ignored. Do not commit generated local provenance as
 acceptance evidence until it has been generated from the actual DuckDB snapshot
 and relation counts are validated.
+
+## Phase 2.2 Baseline Workflow
+
+Run classical baseline experiments from a published Phase 2.1 manifest:
+
+```powershell
+python -m uv run python -m chesslens.modeling.run_baselines `
+	--config configs/baselines/fixture_smoke.yaml `
+	--modeling-manifest "data/modeling/datasets/<modeling_dataset_id>/_manifest.json"
+```
+
+Local real-data preset:
+
+- `configs/baselines/local_real.yaml`
+
+Dry-run and validate-only checks:
+
+```powershell
+python -m uv run python -m chesslens.modeling.run_baselines `
+	--config configs/baselines/fixture_smoke.yaml `
+	--modeling-manifest "data/modeling/datasets/<modeling_dataset_id>/_manifest.json" `
+	--dry-run
+
+python -m uv run python -m chesslens.modeling.run_baselines `
+	--config configs/baselines/fixture_smoke.yaml `
+	--modeling-manifest "data/modeling/datasets/<modeling_dataset_id>/_manifest.json" `
+	--validate-only
+```
+
+Published experiments are written under `data/baselines/experiments/<experiment_id>/`
+with `_manifest.json`, `_SUCCESS`, model artifacts, aggregate/subgroup metrics,
+bootstrap confidence intervals, calibration outputs, prediction samples, and leakage
+audit reports.
 
 Windows PowerShell real-data workflow (Phase 2.1b):
 

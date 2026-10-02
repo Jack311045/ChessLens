@@ -1,4 +1,4 @@
-# Dependency Plan (Phase 0 through Phase 1.2)
+# Dependency Plan (Phase 0 through Phase 2.2)
 
 ## Python Version
 
@@ -18,6 +18,8 @@ Why:
 - `polars`: lightweight, future-proof analytics and schema checks.
 - `pyarrow`: explicit analytical schemas and Parquet interoperability.
 - `duckdb`: local analytical backend compatibility for next ETL stage.
+- `scikit-learn`: multinomial logistic baseline and shared preprocessing utilities.
+- `lightgbm`: gradient-boosted ranking baseline for policy move ordering.
 - `psutil`: cross-platform process memory sampling for measured peak RSS ingestion metrics.
 - `PyYAML`: externalized ingestion config loading.
 - `dbt-core` (pinned): dbt CLI and SQL DAG execution for Phase 1.2b warehouse transformations.
@@ -29,6 +31,9 @@ it reuses the existing `zstandard`, `pyarrow`, `duckdb`, `psutil`, and `PyYAML` 
 Phase 1.2d (safe parallel shard ingestion) also adds **no new dependencies**; shard
 parallelism uses Python standard library process pools (`concurrent.futures` /
 `multiprocessing`) and existing `psutil` memory telemetry.
+
+Phase 2.2 (classical baselines) adds `scikit-learn` and `lightgbm` for leakage-aware
+value/policy baseline modeling and evaluation.
 
 ## Development Dependencies
 
