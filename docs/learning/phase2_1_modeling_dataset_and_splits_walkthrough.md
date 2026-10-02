@@ -143,7 +143,7 @@ Optional controls:
 - `--dry-run`
 - `--validate-only`
 
-Real-data safety checks before 2017 modeling commands:
+Real-data execution order before 2017 modeling commands:
 
 1. Locate your actual DuckDB path (do not guess file names):
 
@@ -152,10 +152,10 @@ Get-ChildItem data\tmp -Filter *.duckdb |
   Select-Object FullName, Length, LastWriteTime
 ```
 
-2. Read-only relation inspection for required warehouse relations:
+2. Inspect candidate DuckDB files read-only and verify required relations:
 
 ```powershell
-python -m uv run python - <<'PY'
+@'
 import duckdb
 from pathlib import Path
 
@@ -177,10 +177,15 @@ try:
   )
 finally:
   connection.close()
-PY
+'@ | python -m uv run python -
 ```
 
-3. Generate warehouse provenance from the actual DuckDB snapshot:
+3. Select the DuckDB that contains both relations:
+
+- `main.stg_games`
+- `main.int_move_context`
+
+4. Generate warehouse provenance from that selected DuckDB snapshot:
 
 ```powershell
 python -m uv run python -m chesslens.modeling.generate_warehouse_provenance `
@@ -192,6 +197,47 @@ python -m uv run python -m chesslens.modeling.generate_warehouse_provenance `
   --sampling-evidence-path reports/acceptance/phase1_2_2017_tier2_sample_summary.json `
   --output reports/local/phase2_1b_2017_tier2_warehouse_provenance.json
 ```
+
+5. Dry-run modeling command:
+
+```powershell
+python -m uv run python -m chesslens.modeling.build_dataset `
+  --config configs/modeling/2017_01_sample.yaml `
+  --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+  --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+  --warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+  --output-root data/modeling `
+  --dry-run
+```
+
+6. First actual bounded modeling build (can be long-running):
+
+```powershell
+python -m uv run python -m chesslens.modeling.build_dataset `
+  --config configs/modeling/2017_01_sample.yaml `
+  --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+  --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+  --warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+  --output-root data/modeling `
+  --max-games 5000 `
+  --max-examples 500000
+```
+
+7. Validate-only after the first real build exists:
+
+```powershell
+python -m uv run python -m chesslens.modeling.build_dataset `
+  --config configs/modeling/2017_01_sample.yaml `
+  --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+  --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+  --warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+  --output-root data/modeling `
+  --max-games 5000 `
+  --max-examples 500000 `
+  --validate-only
+```
+
+8. Run the same bounded build command again and confirm `reused_existing=true`.
 
 ## 9. Reading the Manifest Quickly
 

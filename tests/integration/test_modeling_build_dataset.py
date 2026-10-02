@@ -490,6 +490,44 @@ def test_modeling_build_idempotent_reuse(tmp_path: Path) -> None:
     assert (first.dataset_path / "_SUCCESS").exists()
 
 
+def test_modeling_builder_opens_duckdb_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = (tmp_path / "warehouse.duckdb").resolve()
+
+    original_connect = duckdb.connect
+    read_only_flags: list[bool] = []
+
+    def _recording_connect(
+        database: str | Path = ":memory:",
+        *,
+        read_only: bool = False,
+        config: dict[str, str | bool | int | float | list[str]] | None = None,
+    ) -> duckdb.DuckDBPyConnection:
+        db_path = Path(database).resolve()
+        if db_path == duckdb_path:
+            read_only_flags.append(read_only)
+        if config is None:
+            return original_connect(database, read_only)
+        return original_connect(database, read_only, config)
+
+    monkeypatch.setattr(duckdb, "connect", _recording_connect)
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    validate_only = run_modeling_dataset_build(config_path=config_path, validate_only=True)
+    assert validate_only.validate_only is True
+
+    reused = run_modeling_dataset_build(config_path=config_path)
+    assert reused.reused_existing is True
+
+    assert len(read_only_flags) >= 3
+    assert all(read_only_flags)
+
+
 def test_modeling_reuse_fails_if_duckdb_deleted(tmp_path: Path) -> None:
     config_path, _, _ = _setup_fixture_environment(tmp_path)
     duckdb_path = tmp_path / "warehouse.duckdb"
