@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -12,6 +13,10 @@ import pytest
 
 from chesslens.features.position_encoding import normalize_fen, position_id_from_fen
 from chesslens.modeling.build_dataset import run_modeling_dataset_build
+from chesslens.modeling.provenance import (
+    WAREHOUSE_PROVENANCE_VERSION,
+    canonical_warehouse_provenance_sha256,
+)
 
 
 def _parse_single_json_document(text: str) -> dict[str, object]:
@@ -47,6 +52,78 @@ def _run_modeling_cli(
         cwd=Path.cwd(),
         check=False,
     )
+
+
+def _write_warehouse_provenance(path: Path, payload_without_hash: dict[str, Any]) -> None:
+    payload = dict(payload_without_hash)
+    payload["warehouse_provenance_sha256"] = canonical_warehouse_provenance_sha256(
+        payload_without_hash
+    )
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _fixture_warehouse_provenance_payload(
+    *,
+    collection_id: str,
+    games_relation: str,
+    move_context_relation: str,
+    snapshot_games: int,
+    snapshot_moves: int,
+    warehouse_kind: str = "fixture",
+    sampling: dict[str, Any] | None = None,
+    transform_identity_value: str = "fixture-dbt-manifest-sha256",
+) -> dict[str, Any]:
+    return {
+        "provenance_version": WAREHOUSE_PROVENANCE_VERSION,
+        "warehouse_kind": warehouse_kind,
+        "collection_id": collection_id,
+        "relations": {
+            "games_relation": games_relation,
+            "move_context_relation": move_context_relation,
+        },
+        "snapshot_counts": {
+            "games": snapshot_games,
+            "moves": snapshot_moves,
+        },
+        "transformation_identity": {
+            "identity_kind": "dbt_manifest_sha256",
+            "identity_value": transform_identity_value,
+        },
+        "sampling": sampling,
+    }
+
+
+def _iter_manifest_strings(value: Any) -> list[str]:
+    out: list[str] = []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        for item in value:
+            out.extend(_iter_manifest_strings(item))
+        return out
+    if isinstance(value, dict):
+        for item in value.values():
+            out.extend(_iter_manifest_strings(item))
+        return out
+    return out
+
+
+def _is_machine_absolute_path(value: str) -> bool:
+    text = value.strip()
+    if not text:
+        return False
+    if text.startswith("/"):
+        return True
+    if re.match(r"^[A-Za-z]:[/\\]", text):
+        return True
+    return False
+
+
+def _rewrite_provenance_with_fresh_hash(path: Path, payload: dict[str, Any]) -> None:
+    payload_without_hash = {
+        key: value for key, value in payload.items() if key != "warehouse_provenance_sha256"
+    }
+    _write_warehouse_provenance(path, payload_without_hash)
 
 
 def _write_collection_manifest(collection_root: Path) -> None:
@@ -275,8 +352,21 @@ def _create_modeling_source_tables(db_path: Path, *, bad_move: bool = False) -> 
         connection.close()
 
 
+def _execute_duckdb_sql(db_path: Path, sql: str) -> None:
+    connection = duckdb.connect(str(db_path))
+    try:
+        connection.execute(sql)
+    finally:
+        connection.close()
+
+
 def _write_modeling_config(
-    path: Path, *, collection_root: Path, duckdb_path: Path, output_root: Path
+    path: Path,
+    *,
+    collection_root: Path,
+    duckdb_path: Path,
+    provenance_path: Path,
+    output_root: Path,
 ) -> None:
     path.write_text(
         "\n".join(
@@ -284,6 +374,7 @@ def _write_modeling_config(
                 "input:",
                 f"  collection_root: {collection_root.as_posix()}",
                 f"  duckdb_path: {duckdb_path.as_posix()}",
+                f"  warehouse_provenance_path: {provenance_path.as_posix()}",
                 "  expected_collection_id: collection-fixture-001",
                 "  move_context_relation: main.int_move_context",
                 "  games_relation: main.stg_games",
@@ -342,25 +433,41 @@ def _write_modeling_config(
     )
 
 
-def _setup_fixture_environment(tmp_path: Path, *, bad_move: bool = False) -> tuple[Path, Path]:
+def _setup_fixture_environment(
+    tmp_path: Path,
+    *,
+    bad_move: bool = False,
+) -> tuple[Path, Path, Path]:
     collection_root = tmp_path / "collection"
     duckdb_path = tmp_path / "warehouse.duckdb"
+    provenance_path = tmp_path / "warehouse_provenance.json"
     output_root = tmp_path / "modeling"
     config_path = tmp_path / "modeling.yaml"
 
     _write_collection_manifest(collection_root)
     _create_modeling_source_tables(duckdb_path, bad_move=bad_move)
+    _write_warehouse_provenance(
+        provenance_path,
+        _fixture_warehouse_provenance_payload(
+            collection_id="collection-fixture-001",
+            games_relation="main.stg_games",
+            move_context_relation="main.int_move_context",
+            snapshot_games=3,
+            snapshot_moves=5,
+        ),
+    )
     _write_modeling_config(
         config_path,
         collection_root=collection_root,
         duckdb_path=duckdb_path,
+        provenance_path=provenance_path,
         output_root=output_root,
     )
-    return config_path, output_root
+    return config_path, output_root, provenance_path
 
 
 def test_modeling_build_idempotent_reuse(tmp_path: Path) -> None:
-    config_path, _ = _setup_fixture_environment(tmp_path)
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
 
     first = run_modeling_dataset_build(config_path=config_path)
     second = run_modeling_dataset_build(config_path=config_path)
@@ -383,8 +490,82 @@ def test_modeling_build_idempotent_reuse(tmp_path: Path) -> None:
     assert (first.dataset_path / "_SUCCESS").exists()
 
 
+def test_modeling_reuse_fails_if_duckdb_deleted(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    duckdb_path.unlink()
+
+    with pytest.raises(FileNotFoundError, match="duckdb_path does not exist"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_reuse_fails_if_games_relation_changes(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    _execute_duckdb_sql(
+        duckdb_path,
+        """
+        INSERT INTO main.stg_games (
+            game_id, source_month, played_date, result,
+            white_player_hash, black_player_hash,
+            white_rating, black_rating,
+            time_control_raw, eco, opening, ply_count
+        )
+        VALUES (
+            'g_extra', '2013-01', '2013.01.11', '1-0',
+            'white_x', 'black_x',
+            1500, 1400,
+            '300+0', 'C20', 'King Pawn Game', 1
+        )
+        """,
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot game count mismatch"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_reuse_fails_if_move_relation_changes(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    _execute_duckdb_sql(
+        duckdb_path,
+        "INSERT INTO main.int_move_context SELECT * FROM main.int_move_context LIMIT 1",
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot move count mismatch"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_validate_only_fails_if_current_snapshot_changes(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    _execute_duckdb_sql(
+        duckdb_path,
+        "INSERT INTO main.int_move_context SELECT * FROM main.int_move_context LIMIT 1",
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot move count mismatch"):
+        run_modeling_dataset_build(config_path=config_path, validate_only=True)
+
+
 def test_modeling_cli_emits_single_json_and_reuses_with_same_counts(tmp_path: Path) -> None:
-    config_path, _ = _setup_fixture_environment(tmp_path)
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
 
     first = _run_modeling_cli(config_path)
     assert first.returncode == 0, first.stderr
@@ -420,7 +601,7 @@ def test_modeling_cli_emits_single_json_and_reuses_with_same_counts(tmp_path: Pa
 
 
 def test_modeling_cli_tampered_manifest_still_fails_reuse(tmp_path: Path) -> None:
-    config_path, _ = _setup_fixture_environment(tmp_path)
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
 
     first = _run_modeling_cli(config_path)
     assert first.returncode == 0, first.stderr
@@ -441,7 +622,7 @@ def test_modeling_cli_tampered_manifest_still_fails_reuse(tmp_path: Path) -> Non
 
 
 def test_modeling_cli_dry_run_emits_single_json(tmp_path: Path) -> None:
-    config_path, _ = _setup_fixture_environment(tmp_path)
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
 
     result = _run_modeling_cli(config_path, extra_args=["--dry-run"])
     assert result.returncode == 0, result.stderr
@@ -459,7 +640,7 @@ def test_modeling_cli_dry_run_emits_single_json(tmp_path: Path) -> None:
 
 
 def test_modeling_cli_validate_only_success_emits_single_json(tmp_path: Path) -> None:
-    config_path, _ = _setup_fixture_environment(tmp_path)
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
 
     build = _run_modeling_cli(config_path)
     assert build.returncode == 0, build.stderr
@@ -480,8 +661,124 @@ def test_modeling_cli_validate_only_success_emits_single_json(tmp_path: Path) ->
     assert "RuntimeWarning" not in result.stdout
 
 
+def test_modeling_dataset_id_stable_with_identical_provenance(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    second = run_modeling_dataset_build(config_path=config_path)
+
+    assert first.modeling_dataset_id == second.modeling_dataset_id
+    assert second.reused_existing is True
+
+
+def test_modeling_dataset_id_changes_when_provenance_changes(tmp_path: Path) -> None:
+    config_path, _, provenance_path = _setup_fixture_environment(tmp_path)
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    payload = cast(dict[str, Any], json.loads(provenance_path.read_text(encoding="utf-8")))
+    transform = cast(dict[str, Any], payload["transformation_identity"])
+    transform["identity_value"] = "fixture-dbt-manifest-sha256-v2"
+    _rewrite_provenance_with_fresh_hash(provenance_path, payload)
+
+    second = run_modeling_dataset_build(config_path=config_path)
+
+    assert first.modeling_dataset_id != second.modeling_dataset_id
+    assert second.reused_existing is False
+
+
+def test_modeling_build_fails_when_provenance_missing(tmp_path: Path) -> None:
+    config_path, _, provenance_path = _setup_fixture_environment(tmp_path)
+    provenance_path.unlink()
+
+    with pytest.raises(RuntimeError, match="Invalid warehouse provenance JSON"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_build_fails_for_malformed_provenance(tmp_path: Path) -> None:
+    config_path, _, provenance_path = _setup_fixture_environment(tmp_path)
+    provenance_path.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="Invalid warehouse provenance JSON"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_build_fails_for_provenance_collection_mismatch(tmp_path: Path) -> None:
+    config_path, _, provenance_path = _setup_fixture_environment(tmp_path)
+    payload = cast(dict[str, Any], json.loads(provenance_path.read_text(encoding="utf-8")))
+    payload["collection_id"] = "other-collection-id"
+    _rewrite_provenance_with_fresh_hash(provenance_path, payload)
+
+    with pytest.raises(RuntimeError, match="collection_id does not match collection manifest"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_build_fails_for_provenance_row_count_mismatch(tmp_path: Path) -> None:
+    config_path, _, provenance_path = _setup_fixture_environment(tmp_path)
+    payload = cast(dict[str, Any], json.loads(provenance_path.read_text(encoding="utf-8")))
+    snapshot_counts = cast(dict[str, Any], payload["snapshot_counts"])
+    snapshot_counts["games"] = 999
+    _rewrite_provenance_with_fresh_hash(provenance_path, payload)
+
+    with pytest.raises(RuntimeError, match="snapshot game count mismatch"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_sampled_warehouse_cannot_claim_full_input(tmp_path: Path) -> None:
+    config_path, _, provenance_path = _setup_fixture_environment(tmp_path)
+
+    collection_manifest_path = tmp_path / "collection" / "_collection_manifest.json"
+    collection_manifest = cast(
+        dict[str, Any], json.loads(collection_manifest_path.read_text(encoding="utf-8"))
+    )
+    counts = cast(dict[str, Any], collection_manifest["counts"])
+    counts["accepted_games"] = 30
+    counts["emitted_moves"] = 50
+    collection_manifest_path.write_text(
+        json.dumps(collection_manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    payload = cast(dict[str, Any], json.loads(provenance_path.read_text(encoding="utf-8")))
+    payload["warehouse_kind"] = "full"
+    payload["sampling"] = None
+    _rewrite_provenance_with_fresh_hash(provenance_path, payload)
+
+    with pytest.raises(RuntimeError, match="warehouse_kind='full'"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_build_fails_for_tampered_provenance_hash(tmp_path: Path) -> None:
+    config_path, _, provenance_path = _setup_fixture_environment(tmp_path)
+    payload = cast(dict[str, Any], json.loads(provenance_path.read_text(encoding="utf-8")))
+    snapshot_counts = cast(dict[str, Any], payload["snapshot_counts"])
+    snapshot_counts["moves"] = 999
+    provenance_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="warehouse_provenance_sha256 mismatch"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_manifest_has_no_secrets_or_machine_absolute_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    secret_value = "super-secret-phase2-1b"
+    monkeypatch.setenv("CHESSLENS_PLAYER_HMAC_KEY", secret_value)
+
+    result = run_modeling_dataset_build(config_path=config_path)
+    manifest_text = result.manifest_path.read_text(encoding="utf-8")
+    manifest = cast(dict[str, Any], json.loads(manifest_text))
+
+    assert secret_value not in manifest_text
+    assert "CHESSLENS_PLAYER_HMAC_KEY" not in manifest_text
+
+    for text in _iter_manifest_strings(manifest):
+        assert not _is_machine_absolute_path(text), text
+
+
 def test_modeling_build_rejects_tampered_manifest(tmp_path: Path) -> None:
-    config_path, _ = _setup_fixture_environment(tmp_path)
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
 
     first = run_modeling_dataset_build(config_path=config_path)
 
@@ -497,7 +794,7 @@ def test_modeling_build_rejects_tampered_manifest(tmp_path: Path) -> None:
 
 
 def test_modeling_build_cleans_staging_on_failure(tmp_path: Path) -> None:
-    config_path, output_root = _setup_fixture_environment(tmp_path, bad_move=True)
+    config_path, output_root, _ = _setup_fixture_environment(tmp_path, bad_move=True)
 
     with pytest.raises(RuntimeError, match="Policy label validation failed"):
         run_modeling_dataset_build(config_path=config_path)

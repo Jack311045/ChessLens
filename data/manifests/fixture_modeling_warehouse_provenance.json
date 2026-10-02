@@ -1,0 +1,19 @@
+{
+  "collection_id": "826a64527ba084b6898ce4e560ab696a9112f686a789889008ee618b573259dd",
+  "provenance_version": "warehouse_provenance_v1",
+  "relations": {
+    "games_relation": "main.stg_games",
+    "move_context_relation": "main.int_move_context"
+  },
+  "sampling": null,
+  "snapshot_counts": {
+    "games": 20,
+    "moves": 1255
+  },
+  "transformation_identity": {
+    "identity_kind": "dbt_manifest_sha256",
+    "identity_value": "fixture-dbt-manifest-generated-at-build-time"
+  },
+  "warehouse_kind": "fixture",
+  "warehouse_provenance_sha256": "9c0a89edd77abe88d1d5221d68deb1a142a74d16a8292beaa2dc3dc69f811206"
+}

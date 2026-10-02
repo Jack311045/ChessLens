@@ -84,10 +84,35 @@ jobs:
         run: |
           mkdir -p data/modeling
 
+          fixture_provenance_path="data/manifests/fixture_modeling_warehouse_provenance.json"
+          uv run python -m chesslens.modeling.generate_warehouse_provenance \
+            --collection-root "$CHESSLENS_COLLECTION_ROOT" \
+            --duckdb-path "$CHESSLENS_DUCKDB_PATH" \
+            --games-relation main.stg_games \
+            --move-context-relation main.int_move_context \
+            --warehouse-kind fixture \
+            --output "$fixture_provenance_path" \
+            --allow-overwrite-incompatible
+
+          echo "Fixture warehouse provenance artifact: ${fixture_provenance_path}"
+          if [ -z "$fixture_provenance_path" ]; then
+            echo "Fixture provenance path is empty" >&2
+            exit 1
+          fi
+          if [ ! -f "$fixture_provenance_path" ]; then
+            echo "Fixture provenance artifact not found: $fixture_provenance_path" >&2
+            exit 1
+          fi
+          if [ ! -r "$fixture_provenance_path" ]; then
+            echo "Fixture provenance artifact is not readable: $fixture_provenance_path" >&2
+            exit 1
+          fi
+
           first_json="$(uv run python -m chesslens.modeling.build_dataset \
             --config configs/modeling/fixture.yaml \
             --collection-root "$CHESSLENS_COLLECTION_ROOT" \
             --duckdb-path "$CHESSLENS_DUCKDB_PATH" \
+            --warehouse-provenance-path "$fixture_provenance_path" \
             --output-root data/modeling)"
           echo "$first_json"
 
@@ -95,6 +120,7 @@ jobs:
             --config configs/modeling/fixture.yaml \
             --collection-root "$CHESSLENS_COLLECTION_ROOT" \
             --duckdb-path "$CHESSLENS_DUCKDB_PATH" \
+            --warehouse-provenance-path "$fixture_provenance_path" \
             --output-root data/modeling)"
           echo "$second_json"
 

@@ -41,6 +41,11 @@ from chesslens.modeling.leakage import (
     compute_novel_position_test_count,
     compute_position_overlap_metrics,
 )
+from chesslens.modeling.provenance import (
+    WarehouseProvenance,
+    load_warehouse_provenance,
+    warehouse_effective_rate_percent,
+)
 from chesslens.modeling.sampling import effective_rate_percent, select_by_hash_mod
 from chesslens.modeling.splits import assign_temporal_split, parse_played_date
 from chesslens.modeling.validation import (
@@ -273,11 +278,18 @@ def _load_collection_identity(config: ModelingConfig) -> dict[str, Any]:
     }
 
 
-def _dataset_identity_payload(config: ModelingConfig, upstream: dict[str, Any]) -> dict[str, Any]:
+def _dataset_identity_payload(
+    config: ModelingConfig,
+    upstream: dict[str, Any],
+    warehouse_provenance: WarehouseProvenance,
+) -> dict[str, Any]:
     return {
         "upstream": {
             "collection_id": upstream["collection_id"],
             "collection_manifest_sha256": upstream["collection_manifest_sha256"],
+            "warehouse_provenance_version": warehouse_provenance.provenance_version,
+            "warehouse_provenance_sha256": warehouse_provenance.warehouse_provenance_sha256,
+            "warehouse_kind": warehouse_provenance.warehouse_kind,
         },
         "versions": {
             "modeling_pipeline_version": config.versions.modeling_pipeline_version,
@@ -330,8 +342,204 @@ def _dataset_identity_payload(config: ModelingConfig, upstream: dict[str, Any]) 
     }
 
 
-def _derive_modeling_dataset_id(config: ModelingConfig, upstream: dict[str, Any]) -> str:
-    return sha256_text(canonical_json(_dataset_identity_payload(config, upstream)))
+def _derive_modeling_dataset_id(
+    config: ModelingConfig,
+    upstream: dict[str, Any],
+    warehouse_provenance: WarehouseProvenance,
+) -> str:
+    payload = _dataset_identity_payload(config, upstream, warehouse_provenance)
+    return sha256_text(canonical_json(payload))
+
+
+def _collection_counts_from_manifest(upstream: dict[str, Any]) -> tuple[int, int]:
+    manifest = _as_mapping(upstream.get("manifest"), field_name="collection_manifest")
+    counts = _as_mapping(manifest.get("counts"), field_name="collection_manifest.counts")
+    return (
+        _as_required_int(
+            counts.get("accepted_games"),
+            field_name="collection_manifest.counts.accepted_games",
+        ),
+        _as_required_int(
+            counts.get("emitted_moves"),
+            field_name="collection_manifest.counts.emitted_moves",
+        ),
+    )
+
+
+def _relation_row_count(connection: duckdb.DuckDBPyConnection, relation: str) -> int:
+    row = connection.execute(f"SELECT COUNT(*) FROM {relation}").fetchone()
+    if row is None:
+        raise RuntimeError(f"Unable to count rows for relation {relation!r}")
+    return int(row[0])
+
+
+def _validate_warehouse_provenance_contract(
+    *,
+    config: ModelingConfig,
+    upstream: dict[str, Any],
+    warehouse_provenance: WarehouseProvenance,
+) -> None:
+    collection_id = str(upstream["collection_id"])
+    if warehouse_provenance.collection_id != collection_id:
+        raise RuntimeError(
+            "Warehouse provenance collection_id does not match collection manifest: "
+            f"{warehouse_provenance.collection_id!r} != {collection_id!r}"
+        )
+
+    if warehouse_provenance.games_relation != config.input.games_relation:
+        raise RuntimeError(
+            "Warehouse provenance games_relation does not match modeling config "
+            "input.games_relation: "
+            f"{warehouse_provenance.games_relation!r} != {config.input.games_relation!r}"
+        )
+
+    if warehouse_provenance.move_context_relation != config.input.move_context_relation:
+        raise RuntimeError(
+            "Warehouse provenance move_context_relation does not match modeling config "
+            "input.move_context_relation: "
+            f"{warehouse_provenance.move_context_relation!r} != "
+            f"{config.input.move_context_relation!r}"
+        )
+
+
+def _validate_warehouse_provenance_against_duckdb(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    config: ModelingConfig,
+    upstream: dict[str, Any],
+    warehouse_provenance: WarehouseProvenance,
+) -> dict[str, int]:
+    actual_games = _relation_row_count(connection, config.input.games_relation)
+    actual_moves = _relation_row_count(connection, config.input.move_context_relation)
+
+    if warehouse_provenance.snapshot_counts.games != actual_games:
+        raise RuntimeError(
+            "Warehouse provenance snapshot game count mismatch for relation "
+            f"{config.input.games_relation!r}: declared "
+            f"{warehouse_provenance.snapshot_counts.games}, actual {actual_games}"
+        )
+
+    if warehouse_provenance.snapshot_counts.moves != actual_moves:
+        raise RuntimeError(
+            "Warehouse provenance snapshot move count mismatch for relation "
+            f"{config.input.move_context_relation!r}: declared "
+            f"{warehouse_provenance.snapshot_counts.moves}, actual {actual_moves}"
+        )
+
+    collection_games, collection_moves = _collection_counts_from_manifest(upstream)
+
+    if warehouse_provenance.warehouse_kind == "full":
+        if actual_games != collection_games or actual_moves != collection_moves:
+            raise RuntimeError(
+                "Warehouse provenance declares warehouse_kind='full' but DuckDB relation counts "
+                "do not match the parent collection manifest counts. This warehouse appears "
+                "sampled "
+                "or filtered and must be declared as deterministic_sample or fixture."
+            )
+
+    if warehouse_provenance.warehouse_kind == "deterministic_sample":
+        sampling = warehouse_provenance.sampling
+        if sampling is None:
+            raise RuntimeError(
+                "deterministic_sample warehouse provenance is missing sampling metadata"
+            )
+
+        if sampling.parent_collection_id != str(upstream["collection_id"]):
+            raise RuntimeError(
+                "Warehouse provenance sampling.parent_collection_id does not match "
+                "collection manifest collection_id: "
+                f"{sampling.parent_collection_id!r} != {upstream['collection_id']!r}"
+            )
+
+        if sampling.parent_full_counts.games != collection_games:
+            raise RuntimeError(
+                "Warehouse provenance sampling.parent_full_counts.games does not match "
+                "collection manifest accepted_games: "
+                f"{sampling.parent_full_counts.games} != {collection_games}"
+            )
+
+        if sampling.parent_full_counts.moves != collection_moves:
+            raise RuntimeError(
+                "Warehouse provenance sampling.parent_full_counts.moves does not match "
+                "collection manifest emitted_moves: "
+                f"{sampling.parent_full_counts.moves} != {collection_moves}"
+            )
+
+        if actual_games > collection_games or actual_moves > collection_moves:
+            raise RuntimeError(
+                "Warehouse provenance declares deterministic_sample but sampled relation counts "
+                "exceed parent collection counts"
+            )
+
+    return {
+        "actual_games": actual_games,
+        "actual_moves": actual_moves,
+        "collection_games": collection_games,
+        "collection_moves": collection_moves,
+    }
+
+
+def _open_validated_duckdb_connection(
+    *,
+    config: ModelingConfig,
+    upstream: dict[str, Any],
+    warehouse_provenance: WarehouseProvenance,
+) -> duckdb.DuckDBPyConnection:
+    if not config.input.duckdb_path.exists():
+        raise FileNotFoundError(
+            "Configured duckdb_path does not exist. Run preflight and dbt build first: "
+            f"{config.input.duckdb_path.as_posix()}"
+        )
+
+    connection = duckdb.connect(str(config.input.duckdb_path))
+    try:
+        _ensure_relation_exists(connection, config.input.games_relation)
+        _ensure_relation_exists(connection, config.input.move_context_relation)
+        _validate_warehouse_provenance_against_duckdb(
+            connection=connection,
+            config=config,
+            upstream=upstream,
+            warehouse_provenance=warehouse_provenance,
+        )
+    except Exception:
+        connection.close()
+        raise
+    return connection
+
+
+def _sampling_stage_summary(
+    *,
+    config: ModelingConfig,
+    warehouse_provenance: WarehouseProvenance,
+) -> dict[str, Any]:
+    warehouse_requested_rate = (
+        warehouse_provenance.sampling.requested_rate_percent
+        if warehouse_provenance.sampling is not None
+        else (100.0 if warehouse_provenance.warehouse_kind == "full" else None)
+    )
+    warehouse_effective_rate = warehouse_effective_rate_percent(warehouse_provenance)
+
+    modeling_effective_rate = effective_rate_percent(
+        hash_modulus=config.sampling.hash_modulus,
+        hash_threshold=config.sampling.hash_threshold,
+    )
+    cumulative_effective_rate = None
+    if warehouse_effective_rate is not None:
+        cumulative_effective_rate = (warehouse_effective_rate * modeling_effective_rate) / 100.0
+
+    return {
+        "warehouse": {
+            "warehouse_kind": warehouse_provenance.warehouse_kind,
+            "requested_rate_percent_of_full_collection": warehouse_requested_rate,
+            "effective_rate_percent_of_full_collection": warehouse_effective_rate,
+            "sampling": warehouse_provenance.payload.get("sampling"),
+        },
+        "modeling": {
+            "requested_rate_percent_of_upstream_warehouse": config.sampling.requested_rate_percent,
+            "effective_rate_percent_of_upstream_warehouse": modeling_effective_rate,
+        },
+        "cumulative_effective_rate_percent_of_full_collection": cumulative_effective_rate,
+    }
 
 
 def _validate_existing_dataset(
@@ -1039,6 +1247,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--collection-root", default=None)
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--duckdb-path", default=None)
+    parser.add_argument("--warehouse-provenance-path", default=None)
     parser.add_argument("--max-games", type=int, default=None)
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
@@ -1052,6 +1261,7 @@ def run_modeling_dataset_build(
     collection_root_override: str | None = None,
     output_root_override: str | None = None,
     duckdb_path_override: str | None = None,
+    warehouse_provenance_path_override: str | None = None,
     max_games_override: int | None = None,
     max_examples_override: int | None = None,
     dry_run: bool = False,
@@ -1066,14 +1276,22 @@ def run_modeling_dataset_build(
         collection_root=collection_root_override,
         output_root=output_root_override,
         duckdb_path=duckdb_path_override,
+        warehouse_provenance_path=warehouse_provenance_path_override,
         max_games=max_games_override,
         max_examples=max_examples_override,
     )
 
     upstream = _load_collection_identity(config)
-    identity_payload = _dataset_identity_payload(config, upstream)
+    warehouse_provenance = load_warehouse_provenance(config.input.warehouse_provenance_path)
+    _validate_warehouse_provenance_contract(
+        config=config,
+        upstream=upstream,
+        warehouse_provenance=warehouse_provenance,
+    )
+
+    identity_payload = _dataset_identity_payload(config, upstream, warehouse_provenance)
     identity_payload_hash = sha256_text(canonical_json(identity_payload))
-    modeling_dataset_id = _derive_modeling_dataset_id(config, upstream)
+    modeling_dataset_id = _derive_modeling_dataset_id(config, upstream, warehouse_provenance)
 
     run_id = f"modeling-{datetime.now(tz=UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
     dataset_root = config.output.output_root / "datasets"
@@ -1081,6 +1299,13 @@ def run_modeling_dataset_build(
     manifest_path = final_dataset_path / "_manifest.json"
 
     if final_dataset_path.exists():
+        connection = _open_validated_duckdb_connection(
+            config=config,
+            upstream=upstream,
+            warehouse_provenance=warehouse_provenance,
+        )
+        connection.close()
+
         existing_manifest = _validate_existing_dataset(
             dataset_path=final_dataset_path,
             expected_dataset_id=modeling_dataset_id,
@@ -1121,26 +1346,26 @@ def run_modeling_dataset_build(
             validate_only=False,
         )
 
-    if not config.input.duckdb_path.exists():
-        raise FileNotFoundError(
-            "Configured duckdb_path does not exist. Run preflight and dbt build first: "
-            f"{config.input.duckdb_path.as_posix()}"
-        )
-
     staging_root = config.output.output_root / "staging" / f"{modeling_dataset_id}__{run_id}"
     _safe_rmtree(staging_root)
     staging_root.mkdir(parents=True, exist_ok=False)
 
+    connection = _open_validated_duckdb_connection(
+        config=config,
+        upstream=upstream,
+        warehouse_provenance=warehouse_provenance,
+    )
+
     started = time.perf_counter()
     sampler = PeakRssSampler(interval_seconds=0.05)
     sampler.start()
-
-    connection = duckdb.connect(str(config.input.duckdb_path))
     published = False
 
     try:
-        _ensure_relation_exists(connection, config.input.games_relation)
-        _ensure_relation_exists(connection, config.input.move_context_relation)
+        sampling_stages = _sampling_stage_summary(
+            config=config,
+            warehouse_provenance=warehouse_provenance,
+        )
 
         writer = ModelingParquetWriter(
             dataset_root=staging_root,
@@ -1227,6 +1452,10 @@ def run_modeling_dataset_build(
                 "input_kind": "collection",
                 "collection_id": upstream["collection_id"],
                 "collection_manifest_sha256": upstream["collection_manifest_sha256"],
+                "warehouse_provenance_version": warehouse_provenance.provenance_version,
+                "warehouse_provenance_sha256": warehouse_provenance.warehouse_provenance_sha256,
+                "warehouse_kind": warehouse_provenance.warehouse_kind,
+                "warehouse_provenance": warehouse_provenance.payload,
             },
             "versions": {
                 "modeling_pipeline_version": config.versions.modeling_pipeline_version,
@@ -1260,6 +1489,7 @@ def run_modeling_dataset_build(
                     sampling_stats.get("games_selected_after_split_policy", 0)
                 ),
             },
+            "sampling_stages": sampling_stages,
             "splits": {
                 "definition_version": config.versions.split_definition_version,
                 "train": {
@@ -1371,6 +1601,7 @@ def main() -> None:
         collection_root_override=args.collection_root,
         output_root_override=args.output_root,
         duckdb_path_override=args.duckdb_path,
+        warehouse_provenance_path_override=args.warehouse_provenance_path,
         max_games_override=args.max_games,
         max_examples_override=args.max_examples,
         dry_run=bool(args.dry_run),

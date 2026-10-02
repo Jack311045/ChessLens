@@ -1,7 +1,8 @@
 input:
   collection_root: data/processed/collections/2017_01_collection
   duckdb_path: data/tmp/chesslens_2017_01_collection.duckdb
-  expected_collection_id: null
+  warehouse_provenance_path: reports/local/phase2_1b_2017_tier2_warehouse_provenance.json
+  expected_collection_id: 56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb
   move_context_relation: main.int_move_context
   games_relation: main.stg_games
 

@@ -501,10 +501,49 @@ diagnostic and complements full test-split evaluation.
 `modeling_dataset_id` is derived from:
 
 - upstream collection identity (`collection_id`, collection-manifest hash),
+- upstream warehouse provenance identity (`provenance_version`, canonical provenance SHA-256,
+	warehouse kind),
 - modeling/split/schema/encoding version identifiers,
 - sampling and player-holdout rule parameters,
 - split date ranges + missing-date policy,
 - output-affecting query/runtime options.
+
+### Warehouse provenance contract (`warehouse_provenance_v1`)
+
+Phase 2.1b requires an explicit warehouse provenance artifact passed through
+`input.warehouse_provenance_path` (or `--warehouse-provenance-path`).
+
+Generate this artifact from the actual DuckDB snapshot using:
+
+- `python -m chesslens.modeling.generate_warehouse_provenance ...`
+
+Template/example files are documentation aids only and are not acceptance evidence
+until regenerated and validated against the real target DuckDB relations.
+
+The artifact must include:
+
+- `provenance_version` and `warehouse_kind` (`full`, `deterministic_sample`, `fixture`),
+- `collection_id` from the parent collection manifest,
+- relation names used by modeling (`games_relation`, `move_context_relation`),
+- declared warehouse snapshot row counts (`snapshot_counts.games`, `snapshot_counts.moves`),
+- stable transformation identity (for example dbt manifest hash),
+- canonical payload hash `warehouse_provenance_sha256`.
+
+For `deterministic_sample`, sampling metadata is mandatory:
+
+- `parent_collection_id`, sampling rule + predicate, requested percent,
+- parent full counts,
+- sampled counts,
+- optional effective rate percent.
+
+Before writing modeling output, the builder validates provenance against DuckDB:
+
+- required relations must exist,
+- provenance collection ID must match the collection manifest,
+- declared snapshot counts must match DuckDB relation counts,
+- sampled/full declarations must be internally consistent,
+- `warehouse_kind=full` must match full collection counts (sampled warehouses cannot
+	silently claim full input).
 
 Publication contract:
 
@@ -518,3 +557,17 @@ Reuse contract:
 - existing published dataset can be reused only when manifest identity fields match
 	expected values;
 - identity mismatch is a hard failure (tamper/staleness guard).
+
+### Two-stage sampling semantics
+
+Modeling manifests now record sampling as two separate stages:
+
+- warehouse stage (`sampling_stages.warehouse.*`): how DuckDB was produced from the
+	full collection (full/fixture/deterministic sample),
+- modeling stage (`sampling_stages.modeling.*`): game-level modeling selection from
+	that warehouse.
+
+The manifest also records
+`sampling_stages.cumulative_effective_rate_percent_of_full_collection` when derivable.
+This prevents mislabeling a two-stage flow (for example 10% warehouse then 10%
+modeling) as a direct single-stage 10% sample.

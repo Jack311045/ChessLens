@@ -1,0 +1,36 @@
+{
+  "template_note": "Example template only. Generate a real artifact from your actual DuckDB snapshot before acceptance.",
+  "provenance_version": "warehouse_provenance_v1",
+  "warehouse_kind": "deterministic_sample",
+  "collection_id": "REPLACE_WITH_COLLECTION_ID",
+  "relations": {
+    "games_relation": "main.stg_games",
+    "move_context_relation": "main.int_move_context"
+  },
+  "snapshot_counts": {
+    "games": 0,
+    "moves": 0
+  },
+  "transformation_identity": {
+    "identity_kind": "dbt_project_fingerprint_v1",
+    "identity_value": "REPLACE_WITH_GENERATED_FINGERPRINT"
+  },
+  "sampling": {
+    "parent_collection_id": "REPLACE_WITH_COLLECTION_ID",
+    "sampling_rule_version": "sha256_mod_v1",
+    "sampling_predicate": "mod(hash(game_id), 10000) < 1000",
+    "requested_rate_percent": 10.0,
+    "hash_modulus": 10000,
+    "hash_threshold": 1000,
+    "parent_full_counts": {
+      "games": 0,
+      "moves": 0
+    },
+    "sampled_counts": {
+      "games": 0,
+      "moves": 0
+    },
+    "effective_rate_percent": 0.0
+  },
+  "warehouse_provenance_sha256": "REPLACE_WITH_CANONICAL_HASH"
+}
