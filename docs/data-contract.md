@@ -513,6 +513,13 @@ diagnostic and complements full test-split evaluation.
 Phase 2.1b requires an explicit warehouse provenance artifact passed through
 `input.warehouse_provenance_path` (or `--warehouse-provenance-path`).
 
+Generate this artifact from the actual DuckDB snapshot using:
+
+- `python -m chesslens.modeling.generate_warehouse_provenance ...`
+
+Template/example files are documentation aids only and are not acceptance evidence
+until regenerated and validated against the real target DuckDB relations.
+
 The artifact must include:
 
 - `provenance_version` and `warehouse_kind` (`full`, `deterministic_sample`, `fixture`),

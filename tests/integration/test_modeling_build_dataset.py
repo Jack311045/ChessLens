@@ -352,6 +352,14 @@ def _create_modeling_source_tables(db_path: Path, *, bad_move: bool = False) -> 
         connection.close()
 
 
+def _execute_duckdb_sql(db_path: Path, sql: str) -> None:
+    connection = duckdb.connect(str(db_path))
+    try:
+        connection.execute(sql)
+    finally:
+        connection.close()
+
+
 def _write_modeling_config(
     path: Path,
     *,
@@ -480,6 +488,80 @@ def test_modeling_build_idempotent_reuse(tmp_path: Path) -> None:
     assert manifest["counts"]["selected_policy_examples"] == 5
     assert manifest["counts"]["novel_position_test_rows"] == 1
     assert (first.dataset_path / "_SUCCESS").exists()
+
+
+def test_modeling_reuse_fails_if_duckdb_deleted(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    duckdb_path.unlink()
+
+    with pytest.raises(FileNotFoundError, match="duckdb_path does not exist"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_reuse_fails_if_games_relation_changes(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    _execute_duckdb_sql(
+        duckdb_path,
+        """
+        INSERT INTO main.stg_games (
+            game_id, source_month, played_date, result,
+            white_player_hash, black_player_hash,
+            white_rating, black_rating,
+            time_control_raw, eco, opening, ply_count
+        )
+        VALUES (
+            'g_extra', '2013-01', '2013.01.11', '1-0',
+            'white_x', 'black_x',
+            1500, 1400,
+            '300+0', 'C20', 'King Pawn Game', 1
+        )
+        """,
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot game count mismatch"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_reuse_fails_if_move_relation_changes(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    _execute_duckdb_sql(
+        duckdb_path,
+        "INSERT INTO main.int_move_context SELECT * FROM main.int_move_context LIMIT 1",
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot move count mismatch"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_validate_only_fails_if_current_snapshot_changes(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    duckdb_path = tmp_path / "warehouse.duckdb"
+
+    first = run_modeling_dataset_build(config_path=config_path)
+    assert first.reused_existing is False
+
+    _execute_duckdb_sql(
+        duckdb_path,
+        "INSERT INTO main.int_move_context SELECT * FROM main.int_move_context LIMIT 1",
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot move count mismatch"):
+        run_modeling_dataset_build(config_path=config_path, validate_only=True)
 
 
 def test_modeling_cli_emits_single_json_and_reuses_with_same_counts(tmp_path: Path) -> None:

@@ -479,6 +479,34 @@ def _validate_warehouse_provenance_against_duckdb(
     }
 
 
+def _open_validated_duckdb_connection(
+    *,
+    config: ModelingConfig,
+    upstream: dict[str, Any],
+    warehouse_provenance: WarehouseProvenance,
+) -> duckdb.DuckDBPyConnection:
+    if not config.input.duckdb_path.exists():
+        raise FileNotFoundError(
+            "Configured duckdb_path does not exist. Run preflight and dbt build first: "
+            f"{config.input.duckdb_path.as_posix()}"
+        )
+
+    connection = duckdb.connect(str(config.input.duckdb_path))
+    try:
+        _ensure_relation_exists(connection, config.input.games_relation)
+        _ensure_relation_exists(connection, config.input.move_context_relation)
+        _validate_warehouse_provenance_against_duckdb(
+            connection=connection,
+            config=config,
+            upstream=upstream,
+            warehouse_provenance=warehouse_provenance,
+        )
+    except Exception:
+        connection.close()
+        raise
+    return connection
+
+
 def _sampling_stage_summary(
     *,
     config: ModelingConfig,
@@ -1271,6 +1299,13 @@ def run_modeling_dataset_build(
     manifest_path = final_dataset_path / "_manifest.json"
 
     if final_dataset_path.exists():
+        connection = _open_validated_duckdb_connection(
+            config=config,
+            upstream=upstream,
+            warehouse_provenance=warehouse_provenance,
+        )
+        connection.close()
+
         existing_manifest = _validate_existing_dataset(
             dataset_path=final_dataset_path,
             expected_dataset_id=modeling_dataset_id,
@@ -1311,33 +1346,22 @@ def run_modeling_dataset_build(
             validate_only=False,
         )
 
-    if not config.input.duckdb_path.exists():
-        raise FileNotFoundError(
-            "Configured duckdb_path does not exist. Run preflight and dbt build first: "
-            f"{config.input.duckdb_path.as_posix()}"
-        )
-
     staging_root = config.output.output_root / "staging" / f"{modeling_dataset_id}__{run_id}"
     _safe_rmtree(staging_root)
     staging_root.mkdir(parents=True, exist_ok=False)
 
+    connection = _open_validated_duckdb_connection(
+        config=config,
+        upstream=upstream,
+        warehouse_provenance=warehouse_provenance,
+    )
+
     started = time.perf_counter()
     sampler = PeakRssSampler(interval_seconds=0.05)
     sampler.start()
-
-    connection = duckdb.connect(str(config.input.duckdb_path))
     published = False
 
     try:
-        _ensure_relation_exists(connection, config.input.games_relation)
-        _ensure_relation_exists(connection, config.input.move_context_relation)
-        _validate_warehouse_provenance_against_duckdb(
-            connection=connection,
-            config=config,
-            upstream=upstream,
-            warehouse_provenance=warehouse_provenance,
-        )
-
         sampling_stages = _sampling_stage_summary(
             config=config,
             warehouse_provenance=warehouse_provenance,

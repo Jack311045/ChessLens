@@ -143,6 +143,56 @@ Optional controls:
 - `--dry-run`
 - `--validate-only`
 
+Real-data safety checks before 2017 modeling commands:
+
+1. Locate your actual DuckDB path (do not guess file names):
+
+```powershell
+Get-ChildItem data\tmp -Filter *.duckdb |
+  Select-Object FullName, Length, LastWriteTime
+```
+
+2. Read-only relation inspection for required warehouse relations:
+
+```powershell
+python -m uv run python - <<'PY'
+import duckdb
+from pathlib import Path
+
+duckdb_path = Path("REPLACE_WITH_FULL_DUCKDB_PATH")
+connection = duckdb.connect(str(duckdb_path), read_only=True)
+try:
+  print(connection.execute(
+    """
+    SELECT table_schema, table_name, table_type
+    FROM information_schema.tables
+    WHERE table_schema = 'main'
+    ORDER BY table_name
+    """
+  ).fetchall())
+  print("main.stg_games:", connection.execute("SELECT COUNT(*) FROM main.stg_games").fetchone()[0])
+  print(
+    "main.int_move_context:",
+    connection.execute("SELECT COUNT(*) FROM main.int_move_context").fetchone()[0],
+  )
+finally:
+  connection.close()
+PY
+```
+
+3. Generate warehouse provenance from the actual DuckDB snapshot:
+
+```powershell
+python -m uv run python -m chesslens.modeling.generate_warehouse_provenance `
+  --collection-root data/processed/collections/56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb `
+  --duckdb-path "REPLACE_WITH_FULL_DUCKDB_PATH" `
+  --games-relation main.stg_games `
+  --move-context-relation main.int_move_context `
+  --warehouse-kind deterministic_sample `
+  --sampling-evidence-path reports/acceptance/phase1_2_2017_tier2_sample_summary.json `
+  --output reports/local/phase2_1b_2017_tier2_warehouse_provenance.json
+```
+
 ## 9. Reading the Manifest Quickly
 
 Key fields to inspect in `_manifest.json`:

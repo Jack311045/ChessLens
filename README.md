@@ -158,6 +158,7 @@ Windows direct equivalents:
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root <dataset-root> --output reports/benchmarks/ingestion_benchmark.json`
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root data/processed/datasets/c7703b6c4404e13814dedd4431146c09fd6a389843a400a7ea4c4e2ec40ab4a9 --output reports/benchmarks/ingestion_2013_01.json`
 - `python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml --collection-root <collection-root> --duckdb-path <duckdb-path> --warehouse-provenance-path <warehouse-provenance-path> --output-root data/modeling`
+- `python -m uv run python -m chesslens.modeling.generate_warehouse_provenance --collection-root <collection-root> --duckdb-path <duckdb-path> --games-relation main.stg_games --move-context-relation main.int_move_context --warehouse-kind <full|deterministic_sample|fixture> --output <output-json-path>`
 - `python -m uv run pytest -q`
 - `python -m uv run ruff check .`
 - `python -m uv run mypy src tests scripts`
@@ -283,12 +284,89 @@ deterministic Tier-2 sample).
 Real 2017 Tier-2 sample config uses:
 
 - `configs/modeling/2017_01_sample.yaml`
-- `reports/acceptance/phase2_1b_2017_tier2_warehouse_provenance.json`
+- generated provenance output path: `reports/local/phase2_1b_2017_tier2_warehouse_provenance.json`
 
-That provenance artifact is derived from existing acceptance evidence:
+Do not treat any template as acceptance evidence. Generate provenance from your
+actual DuckDB snapshot first.
+
+Use existing Tier-2 acceptance evidence as sampling input:
 
 - `reports/acceptance/phase1_2_2017_tier2_sample_summary.json`
 - `reports/acceptance/phase1_2b_2017_dbt_summary.json`
+
+Find your real DuckDB path:
+
+```powershell
+Get-ChildItem data\tmp -Filter *.duckdb |
+	Select-Object FullName, Length, LastWriteTime
+```
+
+Read-only relation inspection:
+
+```powershell
+python -m uv run python - <<'PY'
+import duckdb
+from pathlib import Path
+
+duckdb_path = Path("REPLACE_WITH_FULL_DUCKDB_PATH")
+connection = duckdb.connect(str(duckdb_path), read_only=True)
+try:
+	rows = connection.execute(
+		"""
+		SELECT table_schema, table_name, table_type
+		FROM information_schema.tables
+		WHERE table_schema = 'main'
+		ORDER BY table_name
+		"""
+	).fetchall()
+	print("main schema relations:")
+	for row in rows:
+		print(row)
+
+	for relation in ("main.stg_games", "main.int_move_context"):
+		count = connection.execute(f"SELECT COUNT(*) FROM {relation}").fetchone()[0]
+		print(f"{relation}: {count}")
+finally:
+	connection.close()
+PY
+```
+
+Generate real warehouse provenance artifact:
+
+```powershell
+python -m uv run python -m chesslens.modeling.generate_warehouse_provenance `
+	--collection-root data/processed/collections/56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb `
+	--duckdb-path "REPLACE_WITH_FULL_DUCKDB_PATH" `
+	--games-relation main.stg_games `
+	--move-context-relation main.int_move_context `
+	--warehouse-kind deterministic_sample `
+	--sampling-evidence-path reports/acceptance/phase1_2_2017_tier2_sample_summary.json `
+	--output reports/local/phase2_1b_2017_tier2_warehouse_provenance.json
+```
+
+Use the generated provenance in modeling commands:
+
+```powershell
+$env:CHESSLENS_COLLECTION_ROOT = "data/processed/collections/56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb"
+$env:CHESSLENS_DUCKDB_PATH = "REPLACE_WITH_FULL_DUCKDB_PATH"
+$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH = "reports/local/phase2_1b_2017_tier2_warehouse_provenance.json"
+
+python -m uv run python -m chesslens.modeling.build_dataset `
+	--config configs/modeling/2017_01_sample.yaml `
+	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+	--output-root data/modeling `
+	--dry-run
+
+python -m uv run python -m chesslens.modeling.build_dataset `
+	--config configs/modeling/2017_01_sample.yaml `
+	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
+	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
+	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+	--output-root data/modeling `
+	--validate-only
+```
 
 Published modeling outputs are written under:
 
