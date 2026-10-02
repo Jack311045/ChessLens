@@ -21,6 +21,12 @@ limits:
   evaluate_all_legal_candidates_validation: true
   evaluate_all_legal_candidates_test: true
 
+training_population:
+  mode: temporal_all
+
+preflight:
+  legality_scope: full
+
 frequency:
   backoff_levels:
     - rating_band_phase

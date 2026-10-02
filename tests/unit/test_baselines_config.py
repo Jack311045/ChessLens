@@ -33,6 +33,10 @@ def _write_config(path: Path, *, ece_bins: int = 15) -> None:
                 "  max_negative_candidates_per_train_position: 128",
                 "  evaluate_all_legal_candidates_validation: true",
                 "  evaluate_all_legal_candidates_test: true",
+                "training_population:",
+                "  mode: temporal_all",
+                "preflight:",
+                "  legality_scope: selected",
                 "frequency:",
                 "  backoff_levels:",
                 "    - rating_band_phase",
@@ -79,6 +83,8 @@ def test_load_baseline_config_success(tmp_path: Path) -> None:
     assert config.limits.max_train_positions == 5000
     assert config.evaluation.ranking_cutoffs == (1, 3, 5)
     assert config.output.prediction_artifact_row_limit == 50000
+    assert config.training_population.mode == "temporal_all"
+    assert config.preflight.legality_scope == "selected"
 
 
 def test_apply_baseline_cli_overrides(tmp_path: Path) -> None:
@@ -113,4 +119,72 @@ def test_load_baseline_config_rejects_invalid_ece_bins(tmp_path: Path) -> None:
     _write_config(config_path, ece_bins=1)
 
     with pytest.raises(ValueError, match="ece_bins"):
+        load_baseline_config(config_path)
+
+
+def test_load_baseline_config_rejects_invalid_training_population_mode(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad-training-mode.yaml"
+    _write_config(config_path)
+    text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        text.replace("mode: temporal_all", "mode: invalid_mode"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="training_population.mode"):
+        load_baseline_config(config_path)
+
+
+def test_load_baseline_config_rejects_invalid_legality_scope(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad-legality-scope.yaml"
+    _write_config(config_path)
+    text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        text.replace("legality_scope: selected", "legality_scope: invalid_scope"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="preflight.legality_scope"):
+        load_baseline_config(config_path)
+
+
+def test_load_baseline_config_rejects_duplicate_frequency_levels(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad-frequency-duplicate.yaml"
+    _write_config(config_path)
+    text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        text.replace("    - phase\n", "    - phase\n    - phase\n"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        load_baseline_config(config_path)
+
+
+def test_load_baseline_config_rejects_unsupported_frequency_level(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad-frequency-unsupported.yaml"
+    _write_config(config_path)
+    text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        text.replace("    - phase", "    - unsupported_level"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported"):
+        load_baseline_config(config_path)
+
+
+def test_load_baseline_config_rejects_non_final_global_level(tmp_path: Path) -> None:
+    config_path = tmp_path / "bad-frequency-global-order.yaml"
+    _write_config(config_path)
+    text = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        text.replace(
+            "    - rating_band_phase\n    - phase\n    - global",
+            "    - global\n    - rating_band_phase\n    - phase",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="must end with 'global'"):
         load_baseline_config(config_path)

@@ -312,30 +312,66 @@ and relation counts are validated.
 
 ## Phase 2.2 Baseline Workflow
 
-Run classical baseline experiments from a published Phase 2.1 manifest:
+Use a published Phase 2.1 modeling manifest and run the local real-data preset
+(`configs/baselines/local_real.yaml`) with these PowerShell commands.
+
+1. Environment sync:
 
 ```powershell
-python -m uv run python -m chesslens.modeling.run_baselines `
-	--config configs/baselines/fixture_smoke.yaml `
-	--modeling-manifest "data/modeling/datasets/<modeling_dataset_id>/_manifest.json"
+python -m uv sync --frozen --dev
 ```
 
-Local real-data preset:
+2. Set the modeling manifest path once for this session:
 
-- `configs/baselines/local_real.yaml`
+```powershell
+$env:CHESSLENS_MODELING_MANIFEST = "data/modeling/datasets/REPLACE_WITH_MODELING_DATASET_ID/_manifest.json"
+```
 
-Dry-run and validate-only checks:
+3. Real-data dry-run (metadata/counts/estimates only):
 
 ```powershell
 python -m uv run python -m chesslens.modeling.run_baselines `
-	--config configs/baselines/fixture_smoke.yaml `
-	--modeling-manifest "data/modeling/datasets/<modeling_dataset_id>/_manifest.json" `
+	--config configs/baselines/local_real.yaml `
+	--modeling-manifest "$env:CHESSLENS_MODELING_MANIFEST" `
 	--dry-run
+```
 
+4. Selected-scope validate-only check (configured by default in `local_real.yaml`):
+
+```powershell
 python -m uv run python -m chesslens.modeling.run_baselines `
-	--config configs/baselines/fixture_smoke.yaml `
-	--modeling-manifest "data/modeling/datasets/<modeling_dataset_id>/_manifest.json" `
+	--config configs/baselines/local_real.yaml `
+	--modeling-manifest "$env:CHESSLENS_MODELING_MANIFEST" `
 	--validate-only
+```
+
+5. First safe local real run (25k/5k/5k bounds):
+
+```powershell
+python -m uv run python -m chesslens.modeling.run_baselines `
+	--config configs/baselines/local_real.yaml `
+	--modeling-manifest "$env:CHESSLENS_MODELING_MANIFEST"
+```
+
+6. Optional full-dataset legality audit (validate-only, no training). This creates a
+temporary config that changes only `preflight.legality_scope` to `full`:
+
+```powershell
+$fullAuditConfig = "configs/baselines/local_real_full_legality.yaml"
+(Get-Content configs/baselines/local_real.yaml) -replace "legality_scope: selected", "legality_scope: full" | Set-Content $fullAuditConfig
+python -m uv run python -m chesslens.modeling.run_baselines `
+	--config $fullAuditConfig `
+	--modeling-manifest "$env:CHESSLENS_MODELING_MANIFEST" `
+	--validate-only
+Remove-Item $fullAuditConfig
+```
+
+7. Inspect final manifest and aggregate metrics from the newest published experiment:
+
+```powershell
+$latestExperiment = Get-ChildItem data/baselines/experiments | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Get-Content (Join-Path $latestExperiment.FullName "_manifest.json")
+Get-Content (Join-Path $latestExperiment.FullName "aggregate_metrics.json")
 ```
 
 Published experiments are written under `data/baselines/experiments/<experiment_id>/`

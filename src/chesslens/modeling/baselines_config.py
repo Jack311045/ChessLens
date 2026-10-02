@@ -15,6 +15,17 @@ BASELINE_PIPELINE_VERSION = "classical_baselines_v1"
 RATING_BAND_DEFINITION_VERSION = "rating_band_v1"
 GAME_PHASE_DEFINITION_VERSION = "game_phase_v1"
 
+SUPPORTED_TRAINING_POPULATION_MODES: tuple[str, ...] = (
+    "temporal_all",
+    "player_disjoint",
+)
+SUPPORTED_LEGALITY_SCOPES: tuple[str, ...] = ("selected", "full")
+SUPPORTED_FREQUENCY_BACKOFF_LEVELS: tuple[str, ...] = (
+    "rating_band_phase",
+    "phase",
+    "global",
+)
+
 
 @dataclass(frozen=True)
 class BaselineInputConfig:
@@ -35,6 +46,16 @@ class BaselineLimitsConfig:
     max_negative_candidates_per_train_position: int | None
     evaluate_all_legal_candidates_validation: bool
     evaluate_all_legal_candidates_test: bool
+
+
+@dataclass(frozen=True)
+class BaselineTrainingPopulationConfig:
+    mode: str
+
+
+@dataclass(frozen=True)
+class BaselinePreflightConfig:
+    legality_scope: str
 
 
 @dataclass(frozen=True)
@@ -87,6 +108,8 @@ class BaselineConfig:
     input: BaselineInputConfig
     output: BaselineOutputConfig
     limits: BaselineLimitsConfig
+    training_population: BaselineTrainingPopulationConfig
+    preflight: BaselinePreflightConfig
     runtime: BaselineRuntimeConfig
     evaluation: BaselineEvalConfig
     frequency: BaselineFrequencyConfig
@@ -190,12 +213,55 @@ def _validate_cutoffs(cutoffs: list[Any]) -> tuple[int, ...]:
     return parsed
 
 
+def _as_enum_value(value: Any, *, field_name: str, allowed: tuple[str, ...]) -> str:
+    parsed = _as_non_empty_string(value, field_name=field_name)
+    if parsed not in allowed:
+        raise ValueError(
+            f"{field_name} must be one of {', '.join(allowed)}; got {parsed!r}"
+        )
+    return parsed
+
+
+def _validate_frequency_backoff_levels(levels_raw: Any) -> tuple[str, ...]:
+    if not isinstance(levels_raw, list) or not levels_raw:
+        raise ValueError("frequency.backoff_levels must be a non-empty list")
+
+    levels = tuple(
+        _as_non_empty_string(item, field_name="frequency.backoff_levels[]")
+        for item in levels_raw
+    )
+    unsupported = sorted(set(levels) - set(SUPPORTED_FREQUENCY_BACKOFF_LEVELS))
+    if unsupported:
+        raise ValueError(
+            "frequency.backoff_levels contains unsupported level(s): "
+            + ", ".join(unsupported)
+        )
+
+    duplicates = sorted(level for level in set(levels) if levels.count(level) > 1)
+    if duplicates:
+        raise ValueError(
+            "frequency.backoff_levels contains duplicate level(s): "
+            + ", ".join(duplicates)
+        )
+
+    if "global" not in levels:
+        raise ValueError("frequency.backoff_levels must include 'global' as final fallback")
+    if levels[-1] != "global":
+        raise ValueError("frequency.backoff_levels must end with 'global'")
+
+    return levels
+
+
 def load_baseline_config(path: str | Path) -> BaselineConfig:
     raw = _load_yaml_dict(Path(path))
 
     raw_input = _as_mapping(raw.get("input"), field_name="input")
     raw_output = _as_mapping(raw.get("output"), field_name="output")
     raw_limits = _as_mapping(raw.get("limits"), field_name="limits")
+    raw_training_population = _as_mapping(
+        raw.get("training_population"), field_name="training_population"
+    )
+    raw_preflight = _as_mapping(raw.get("preflight"), field_name="preflight")
     raw_runtime = _as_mapping(raw.get("runtime"), field_name="runtime")
     raw_eval = _as_mapping(raw.get("evaluation"), field_name="evaluation")
     raw_frequency = _as_mapping(raw.get("frequency"), field_name="frequency")
@@ -255,6 +321,22 @@ def load_baseline_config(path: str | Path) -> BaselineConfig:
         ),
     )
 
+    training_population_config = BaselineTrainingPopulationConfig(
+        mode=_as_enum_value(
+            raw_training_population.get("mode", "temporal_all"),
+            field_name="training_population.mode",
+            allowed=SUPPORTED_TRAINING_POPULATION_MODES,
+        )
+    )
+
+    preflight_config = BaselinePreflightConfig(
+        legality_scope=_as_enum_value(
+            raw_preflight.get("legality_scope", "selected"),
+            field_name="preflight.legality_scope",
+            allowed=SUPPORTED_LEGALITY_SCOPES,
+        )
+    )
+
     runtime_config = BaselineRuntimeConfig(
         seed=_as_non_negative_int(raw_runtime.get("seed", 20261001), field_name="runtime.seed"),
         threads=_as_positive_int(raw_runtime.get("threads", 1), field_name="runtime.threads"),
@@ -281,20 +363,10 @@ def load_baseline_config(path: str | Path) -> BaselineConfig:
 
     backoff_raw = raw_frequency.get(
         "backoff_levels",
-        [
-            "rating_band+game_phase+action",
-            "game_phase+action",
-            "global_action",
-            "action_index_tiebreak",
-        ],
+        ["rating_band_phase", "phase", "global"],
     )
-    if not isinstance(backoff_raw, list) or not backoff_raw:
-        raise ValueError("frequency.backoff_levels must be a non-empty list")
     frequency_config = BaselineFrequencyConfig(
-        backoff_levels=tuple(
-            _as_non_empty_string(item, field_name="frequency.backoff_levels[]")
-            for item in backoff_raw
-        )
+        backoff_levels=_validate_frequency_backoff_levels(backoff_raw)
     )
 
     logistic_config = BaselineLogisticConfig(
@@ -362,6 +434,8 @@ def load_baseline_config(path: str | Path) -> BaselineConfig:
         input=input_config,
         output=output_config,
         limits=limits_config,
+        training_population=training_population_config,
+        preflight=preflight_config,
         runtime=runtime_config,
         evaluation=eval_config,
         frequency=frequency_config,
@@ -454,6 +528,12 @@ def baseline_config_identity_payload(config: BaselineConfig) -> dict[str, Any]:
                 config.limits.evaluate_all_legal_candidates_validation
             ),
             "evaluate_all_legal_candidates_test": config.limits.evaluate_all_legal_candidates_test,
+        },
+        "training_population": {
+            "mode": config.training_population.mode,
+        },
+        "preflight": {
+            "legality_scope": config.preflight.legality_scope,
         },
         "runtime": {
             "seed": config.runtime.seed,
