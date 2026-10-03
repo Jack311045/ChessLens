@@ -12,7 +12,8 @@ from typing import Any
 
 import duckdb
 
-ABS_PATH_PATTERN = re.compile(r"([A-Za-z]:[\\/][^'\"\s\)]*)")
+SQL_STRING_LITERAL_PATTERN = re.compile(r"'((?:''|[^'])*)'")
+WINDOWS_ABS_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 COLLECTION_SEGMENT_PATTERN = re.compile(r"/processed/collections/([^/]+)/", re.IGNORECASE)
 SAMPLED_MARKER_RELATIONS: frozenset[str] = frozenset(
     {
@@ -58,7 +59,12 @@ def _normalize_path(path_text: str) -> str:
 
 
 def _extract_absolute_paths(sql_text: str) -> tuple[str, ...]:
-    return tuple(sorted({_normalize_path(path) for path in ABS_PATH_PATTERN.findall(sql_text)}))
+    absolute_paths: set[str] = set()
+    for literal in SQL_STRING_LITERAL_PATTERN.findall(sql_text):
+        path_text = literal.replace("''", "'")
+        if WINDOWS_ABS_PATH_PATTERN.match(path_text) or path_text.startswith("/"):
+            absolute_paths.add(_normalize_path(path_text))
+    return tuple(sorted(absolute_paths))
 
 
 def _extract_collection_id(path_text: str) -> str | None:

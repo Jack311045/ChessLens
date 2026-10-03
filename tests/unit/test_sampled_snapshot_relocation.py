@@ -9,11 +9,24 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from chesslens.warehouse.sampled_snapshot import (
+    _extract_absolute_paths,
     inspect_sampled_snapshot,
     relocate_sampled_snapshot,
 )
 
 COLLECTION_ID = "56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb"
+
+
+def test_extract_absolute_paths_supports_windows_and_posix_sql_literals() -> None:
+    sql = (
+        "SELECT * FROM read_parquet('/tmp/old/part-000000.parquet') "
+        "UNION ALL SELECT * FROM read_parquet('C:/data/new/part-000001.parquet')"
+    )
+
+    paths = _extract_absolute_paths(sql)
+
+    assert "/tmp/old/part-000000.parquet" in paths
+    assert "C:/data/new/part-000001.parquet" in paths
 
 
 def _write_sample_collection_payloads(collection_root: Path) -> dict[str, int]:
