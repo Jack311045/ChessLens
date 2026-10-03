@@ -200,3 +200,37 @@ def test_preflight_main_derives_collection_root_from_data_root_env(
     assert observed["external_data_root"] == data_root
     assert payload["collection_root"] == expected_collection_root.resolve().as_posix()
     assert payload["external_data_root"] == data_root.resolve().as_posix()
+
+
+def test_preflight_main_fails_for_ambiguous_collection_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "external_data"
+
+    for collection_id in ("collection-a", "collection-b"):
+        collection_root = data_root / "processed" / "collections" / collection_id
+        collection_root.mkdir(parents=True, exist_ok=True)
+        manifest: dict[str, object] = {
+            "collection_id": collection_id,
+            "status": "complete",
+            "counts": {
+                "accepted_games": 1,
+                "emitted_moves": 1,
+                "error_records": 0,
+            },
+            "shards": [],
+        }
+        (collection_root / "_collection_manifest.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("CHESSLENS_DATA_ROOT", str(data_root))
+    monkeypatch.delenv("CHESSLENS_COLLECTION_ID", raising=False)
+    monkeypatch.delenv("CHESSLENS_COLLECTION_ROOT", raising=False)
+    monkeypatch.delenv("CHESSLENS_DATASET_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["preflight", "--skip-register-views"])
+
+    with pytest.raises(DatasetPreflightError, match="Candidate complete collection IDs"):
+        preflight_module.main()

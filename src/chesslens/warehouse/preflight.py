@@ -12,6 +12,7 @@ from typing import Any
 import duckdb
 
 from chesslens.runtime_paths import (
+    RuntimePathResolutionError,
     resolve_collection_root_override_or_env,
     resolve_duckdb_path_override_or_env,
     resolve_external_data_root_env,
@@ -286,7 +287,10 @@ def main() -> None:
         or os.environ.get("CHESSLENS_DUCKDB_TEMP_DIR", "data/tmp/duckdb_temp")
     )
 
-    collection_root = resolve_collection_root_override_or_env(args.collection_root)
+    try:
+        collection_root = resolve_collection_root_override_or_env(args.collection_root)
+    except RuntimePathResolutionError as exc:
+        raise DatasetPreflightError(str(exc)) from exc
     if collection_root is not None:
         from chesslens.warehouse.collection import (
             register_collection_bronze_views,

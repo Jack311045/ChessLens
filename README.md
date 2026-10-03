@@ -226,6 +226,9 @@ Resolved paths now follow these conventions:
 - `CHESSLENS_COLLECTION_ROOT` (if set) wins.
 - Otherwise collection root is derived as:
 	`<CHESSLENS_DATA_ROOT>/processed/collections/<CHESSLENS_COLLECTION_ID>`.
+- If `CHESSLENS_DATA_ROOT` contains multiple complete collections and
+	`CHESSLENS_COLLECTION_ID` is not set, commands fail with an ambiguity error that
+	lists candidate collection IDs.
 - `CHESSLENS_DUCKDB_PATH` (or compatibility alias `CHESSLENS_TIER2_DB_PATH`) supplies
 	warehouse DB location.
 - `CHESSLENS_WAREHOUSE_PROVENANCE_PATH` is used by Phase 2.1 modeling.

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from chesslens.runtime_paths import (
+    RuntimePathResolutionError,
     resolve_collection_root_override_or_env,
     resolve_duckdb_path_override_or_env,
     resolve_external_data_root_env,
@@ -18,6 +20,7 @@ RUNTIME_PATH_ENV_VARS: tuple[str, ...] = (
     "CHESSLENS_DATA_ROOT",
     "CHESSLENS_DUCKDB_PATH",
     "CHESSLENS_MODELING_MANIFEST_PATH",
+    "CHESSLENS_MODELING_MANIFEST",
     "CHESSLENS_TIER2_DB_PATH",
     "CHESSLENS_WAREHOUSE_PROVENANCE_PATH",
 )
@@ -26,6 +29,23 @@ RUNTIME_PATH_ENV_VARS: tuple[str, ...] = (
 def _clear_runtime_path_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in RUNTIME_PATH_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+def _write_complete_collection_manifest(data_root: Path, collection_id: str) -> None:
+    collection_root = data_root / "processed" / "collections" / collection_id
+    collection_root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "collection_id": collection_id,
+        "status": "complete",
+        "counts": {
+            "accepted_games": 1,
+            "emitted_moves": 1,
+            "error_records": 0,
+        },
+        "shards": [],
+    }
+    manifest_path = collection_root / "_collection_manifest.json"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_collection_root_resolves_from_data_root_and_collection_id(
@@ -40,6 +60,35 @@ def test_collection_root_resolves_from_data_root_and_collection_id(
     resolved = resolve_collection_root_override_or_env(None)
 
     assert resolved == data_root / "processed" / "collections" / "collection-abc"
+
+
+def test_collection_root_raises_ambiguity_when_multiple_complete_collections_exist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _clear_runtime_path_env(monkeypatch)
+    data_root = tmp_path / "external_data"
+    _write_complete_collection_manifest(data_root, "collection-a")
+    _write_complete_collection_manifest(data_root, "collection-b")
+    monkeypatch.setenv("CHESSLENS_DATA_ROOT", str(data_root))
+
+    with pytest.raises(RuntimePathResolutionError, match="Candidate complete collection IDs"):
+        resolve_collection_root_override_or_env(None)
+
+
+def test_collection_root_resolves_single_complete_collection_without_collection_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _clear_runtime_path_env(monkeypatch)
+    data_root = tmp_path / "external_data"
+    collection_id = "collection-unique"
+    _write_complete_collection_manifest(data_root, collection_id)
+    monkeypatch.setenv("CHESSLENS_DATA_ROOT", str(data_root))
+
+    resolved = resolve_collection_root_override_or_env(None)
+
+    assert resolved == data_root / "processed" / "collections" / collection_id
 
 
 def test_collection_root_override_precedence(

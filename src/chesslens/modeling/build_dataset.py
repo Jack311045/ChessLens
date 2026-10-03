@@ -57,6 +57,7 @@ from chesslens.modeling.validation import (
 )
 from chesslens.modeling.writer import ModelingParquetWriter, PartitionWriteStats
 from chesslens.runtime_paths import (
+    RuntimePathResolutionError,
     resolve_collection_root_override_or_env,
     resolve_duckdb_path_override_or_env,
     resolve_warehouse_provenance_path_override_or_env,
@@ -1601,7 +1602,11 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    collection_root_override = resolve_collection_root_override_or_env(args.collection_root)
+    try:
+        collection_root_override = resolve_collection_root_override_or_env(args.collection_root)
+    except RuntimePathResolutionError as exc:
+        parser.error(str(exc))
+
     duckdb_path_override = resolve_duckdb_path_override_or_env(
         args.duckdb_path,
         default_path=None,

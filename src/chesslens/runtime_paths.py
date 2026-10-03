@@ -6,8 +6,13 @@ allowing commands to resolve local paths from environment variables at runtime.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+
+
+class RuntimePathResolutionError(RuntimeError):
+    """Raised when environment-based path resolution is ambiguous or invalid."""
 
 
 def _env(name: str) -> str | None:
@@ -26,6 +31,33 @@ def resolve_external_data_root_env() -> Path | None:
     return Path(value)
 
 
+def _discover_complete_collection_roots(data_root: Path) -> list[tuple[str, Path]]:
+    collections_root = data_root / "processed" / "collections"
+    if not collections_root.is_dir():
+        return []
+
+    discovered: list[tuple[str, Path]] = []
+    for candidate in sorted(collections_root.iterdir()):
+        if not candidate.is_dir():
+            continue
+        manifest_path = candidate / "_collection_manifest.json"
+        if not manifest_path.exists():
+            continue
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("status") != "complete":
+            continue
+        collection_id = payload.get("collection_id")
+        if isinstance(collection_id, str) and collection_id.strip():
+            discovered.append((collection_id.strip(), candidate))
+
+    return discovered
+
+
 def resolve_collection_root_override_or_env(collection_root_override: str | None) -> Path | None:
     """Resolve collection root from CLI override, existing env, or derived env pair.
 
@@ -34,6 +66,9 @@ def resolve_collection_root_override_or_env(collection_root_override: str | None
     2. CHESSLENS_COLLECTION_ROOT
     3. CHESSLENS_DATA_ROOT + CHESSLENS_COLLECTION_ID ->
        <data_root>/processed/collections/<collection_id>
+    4. If CHESSLENS_DATA_ROOT is set without CHESSLENS_COLLECTION_ID:
+       - exactly one complete collection -> use it
+       - multiple complete collections -> raise ambiguity error
     """
     if collection_root_override is not None and collection_root_override.strip():
         return Path(collection_root_override)
@@ -44,10 +79,26 @@ def resolve_collection_root_override_or_env(collection_root_override: str | None
 
     data_root = resolve_external_data_root_env()
     collection_id = _env("CHESSLENS_COLLECTION_ID")
-    if data_root is None or collection_id is None:
+    if data_root is None:
         return None
 
-    return data_root / "processed" / "collections" / collection_id
+    if collection_id is not None:
+        return data_root / "processed" / "collections" / collection_id
+
+    complete_collections = _discover_complete_collection_roots(data_root)
+    if not complete_collections:
+        return None
+    if len(complete_collections) == 1:
+        return complete_collections[0][1]
+
+    candidate_ids = ", ".join(
+        sorted(collection_id for collection_id, _ in complete_collections)
+    )
+    raise RuntimePathResolutionError(
+        "Ambiguous collection selection under CHESSLENS_DATA_ROOT. "
+        "Set CHESSLENS_COLLECTION_ID or CHESSLENS_COLLECTION_ROOT explicitly. "
+        f"Candidate complete collection IDs: {candidate_ids}"
+    )
 
 
 def resolve_duckdb_path_override_or_env(

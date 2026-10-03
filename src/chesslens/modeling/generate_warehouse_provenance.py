@@ -18,6 +18,7 @@ from chesslens.modeling.provenance import (
 )
 from chesslens.modeling.validation import canonical_json, read_json_object
 from chesslens.runtime_paths import (
+    RuntimePathResolutionError,
     resolve_collection_root_override_or_env,
     resolve_duckdb_path_override_or_env,
 )
@@ -546,7 +547,11 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    collection_root = resolve_collection_root_override_or_env(args.collection_root)
+    try:
+        collection_root = resolve_collection_root_override_or_env(args.collection_root)
+    except RuntimePathResolutionError as exc:
+        parser.error(str(exc))
+
     if collection_root is None:
         parser.error(
             "collection root is required; pass --collection-root or set "
