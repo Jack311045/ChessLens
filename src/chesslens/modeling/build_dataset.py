@@ -809,16 +809,19 @@ def _append_assignment_candidate(
     white_hash = _as_optional_str(candidate["white_player_hash"])
     black_hash = _as_optional_str(candidate["black_player_hash"])
 
-    is_holdout = False
-    if white_hash is not None and _is_holdout_player(config, white_hash):
-        is_holdout = True
-    if black_hash is not None and _is_holdout_player(config, black_hash):
-        is_holdout = True
+    white_player_is_holdout = (
+        white_hash is not None and _is_holdout_player(config, white_hash)
+    )
+    black_player_is_holdout = (
+        black_hash is not None and _is_holdout_player(config, black_hash)
+    )
+    is_holdout = white_player_is_holdout or black_player_is_holdout
 
     missing_player_hash = white_hash is None or black_hash is None
     eligible_for_player_disjoint_training = (
         split == "train"
-        and not is_holdout
+        and not white_player_is_holdout
+        and not black_player_is_holdout
         and (
             config.player_holdout.missing_player_hash_policy
             == "include_in_player_disjoint_training"
@@ -837,6 +840,8 @@ def _append_assignment_candidate(
             "sample_score_u64": int(candidate["sample_score_u64"]),
             "white_player_hash": white_hash,
             "black_player_hash": black_hash,
+            "white_player_is_holdout": white_player_is_holdout,
+            "black_player_is_holdout": black_player_is_holdout,
             "is_player_holdout_game": is_holdout,
             "player_disjoint_training_eligible": eligible_for_player_disjoint_training,
             "result": _as_optional_str(candidate["result"]),
@@ -1112,10 +1117,10 @@ def _validate_split_and_holdout_constraints(
         f"  SELECT * FROM ({assignments_sql})"
         "), heldout_players AS ("
         "  SELECT DISTINCT white_player_hash AS player_hash FROM assignments "
-        "  WHERE is_player_holdout_game AND white_player_hash IS NOT NULL "
+        "  WHERE white_player_is_holdout AND white_player_hash IS NOT NULL "
         "  UNION "
         "  SELECT DISTINCT black_player_hash AS player_hash FROM assignments "
-        "  WHERE is_player_holdout_game AND black_player_hash IS NOT NULL"
+        "  WHERE black_player_is_holdout AND black_player_hash IS NOT NULL"
         ") "
         "SELECT COUNT(*) FROM assignments a "
         "WHERE a.player_disjoint_training_eligible "

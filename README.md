@@ -350,6 +350,25 @@ Those are different questions. Two DuckDB files can point at the same
 `collection_id` while containing different rows (for example full warehouse versus
 deterministic Tier-2 sample).
 
+Player holdout semantics (beginner-friendly):
+
+- `white_player_is_holdout` and `black_player_is_holdout` are player-level flags
+	computed independently from deterministic hash rules.
+- `is_player_holdout_game` is a game-level flag: true when either player is
+	individually held out.
+- The opponent of a held-out player is not automatically held out.
+- `player_disjoint_training_eligible` is true only for train rows where neither
+	player is individually held out (and missing-player policy allows the row).
+
+Why a false leak can happen if this is implemented incorrectly:
+
+- If validation treats both players from every holdout game as held out, then a
+	normal opponent can be misclassified as held out.
+- That causes a false leakage error when the same opponent appears in another
+	eligible train game.
+- Validation must build the held-out player set from explicit player-level
+	holdout flags, not from game-level holdout status alone.
+
 Real 2017 Tier-2 sample config uses:
 
 - `configs/modeling/2017_01_sample.yaml`

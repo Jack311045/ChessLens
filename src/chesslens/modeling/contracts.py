@@ -13,7 +13,7 @@ from chesslens.domain.records import (
     SCHEMA_VERSION,
 )
 
-MODELING_PIPELINE_VERSION = "modeling_dataset_v1"
+MODELING_PIPELINE_VERSION = "modeling_dataset_v2"
 SPLIT_DEFINITION_VERSION = "temporal_game_split_v1"
 FEATURE_SCHEMA_VERSION = "policy_value_features_v1"
 LABEL_DEFINITION_VERSION = "policy_value_labels_v1"
@@ -68,6 +68,8 @@ GAME_ASSIGNMENT_ARROW_SCHEMA = pa.schema(
         pa.field("sample_score_u64", pa.uint64(), nullable=False),
         pa.field("white_player_hash", pa.string(), nullable=True),
         pa.field("black_player_hash", pa.string(), nullable=True),
+        pa.field("white_player_is_holdout", pa.bool_(), nullable=False),
+        pa.field("black_player_is_holdout", pa.bool_(), nullable=False),
         pa.field("is_player_holdout_game", pa.bool_(), nullable=False),
         pa.field("player_disjoint_training_eligible", pa.bool_(), nullable=False),
         pa.field("result", pa.string(), nullable=True),
