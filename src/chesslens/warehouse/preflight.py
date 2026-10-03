@@ -11,6 +11,13 @@ from typing import Any
 
 import duckdb
 
+from chesslens.runtime_paths import (
+    RuntimePathResolutionError,
+    resolve_collection_root_override_or_env,
+    resolve_duckdb_path_override_or_env,
+    resolve_external_data_root_env,
+)
+
 
 class DatasetPreflightError(RuntimeError):
     """Raised when a published dataset root fails required checks."""
@@ -228,14 +235,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Published collection root containing _collection_manifest.json. "
-            "Defaults to CHESSLENS_COLLECTION_ROOT. Overrides --dataset-root when set."
+            "Defaults to CHESSLENS_COLLECTION_ROOT or derived "
+            "<CHESSLENS_DATA_ROOT>/processed/collections/<CHESSLENS_COLLECTION_ID>. "
+            "Overrides --dataset-root when set."
         ),
     )
     parser.add_argument(
         "--duckdb-path",
         default=None,
         help=(
-            "DuckDB database path for dbt. Defaults to CHESSLENS_DUCKDB_PATH or "
+            "DuckDB database path for dbt. Defaults to CHESSLENS_DUCKDB_PATH, "
+            "CHESSLENS_TIER2_DB_PATH, or "
             "data/tmp/chesslens_warehouse.duckdb."
         ),
     )
@@ -264,32 +274,41 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    duckdb_path = Path(
-        args.duckdb_path
-        or os.environ.get("CHESSLENS_DUCKDB_PATH", "data/tmp/chesslens_warehouse.duckdb")
+    duckdb_path = resolve_duckdb_path_override_or_env(
+        args.duckdb_path,
+        default_path="data/tmp/chesslens_warehouse.duckdb",
     )
+    if duckdb_path is None:
+        raise DatasetPreflightError("Unable to resolve DuckDB path for preflight")
+    external_data_root = resolve_external_data_root_env()
     memory_limit = args.memory_limit or os.environ.get("CHESSLENS_DUCKDB_MEMORY_LIMIT", "4GB")
     temp_directory = Path(
         args.temp_directory
         or os.environ.get("CHESSLENS_DUCKDB_TEMP_DIR", "data/tmp/duckdb_temp")
     )
 
-    collection_root_raw = args.collection_root or os.environ.get("CHESSLENS_COLLECTION_ROOT")
-    if collection_root_raw:
+    try:
+        collection_root = resolve_collection_root_override_or_env(args.collection_root)
+    except RuntimePathResolutionError as exc:
+        raise DatasetPreflightError(str(exc)) from exc
+    if collection_root is not None:
         from chesslens.warehouse.collection import (
             register_collection_bronze_views,
             validate_collection_root,
         )
 
-        collection_root = Path(collection_root_raw)
         if args.skip_register_views:
-            collection_result = validate_collection_root(collection_root)
+            collection_result = validate_collection_root(
+                collection_root,
+                external_data_root=external_data_root,
+            )
         else:
             collection_result = register_collection_bronze_views(
                 collection_root=collection_root,
                 duckdb_path=duckdb_path,
                 memory_limit=memory_limit,
                 temp_directory=temp_directory,
+                external_data_root=external_data_root,
             )
         summary = {
             "input_kind": "collection",
@@ -301,6 +320,11 @@ def main() -> None:
                 "emitted_moves": collection_result.emitted_moves,
                 "error_records": collection_result.error_records,
             },
+            "external_data_root": (
+                external_data_root.resolve().as_posix()
+                if external_data_root is not None
+                else None
+            ),
             "duckdb_path": duckdb_path.resolve().as_posix(),
             "registered_bronze_views": not args.skip_register_views,
         }

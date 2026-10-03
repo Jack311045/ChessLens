@@ -160,9 +160,9 @@ Windows direct equivalents:
 - `python -m uv run dbt docs generate --project-dir dbt --profiles-dir dbt`
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root <dataset-root> --output reports/benchmarks/ingestion_benchmark.json`
 - `python -m uv run python -m chesslens.warehouse.benchmark --dataset-root data/processed/datasets/c7703b6c4404e13814dedd4431146c09fd6a389843a400a7ea4c4e2ec40ab4a9 --output reports/benchmarks/ingestion_2013_01.json`
-- `python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml --collection-root <collection-root> --duckdb-path <duckdb-path> --warehouse-provenance-path <warehouse-provenance-path> --output-root data/modeling`
-- `python -m uv run python -m chesslens.modeling.generate_warehouse_provenance --collection-root <collection-root> --duckdb-path <duckdb-path> --games-relation main.stg_games --move-context-relation main.int_move_context --warehouse-kind <full|deterministic_sample|fixture> --output <output-json-path>`
-- `python -m uv run python -m chesslens.modeling.run_baselines --config configs/baselines/fixture_smoke.yaml --modeling-manifest <modeling_manifest_path>`
+- `python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml`
+- `python -m uv run python -m chesslens.modeling.generate_warehouse_provenance --warehouse-kind <full|deterministic_sample|fixture> --output <output-json-path>`
+- `python -m uv run python -m chesslens.modeling.run_baselines --config configs/baselines/fixture_smoke.yaml`
 - `python -m uv run pytest -q`
 - `python -m uv run ruff check .`
 - `python -m uv run mypy src tests scripts`
@@ -204,6 +204,51 @@ Recommended sequence:
 4. Run dbt `debug`, `compile`, `build`, and optionally `docs generate`.
 
 Preflight fails early with explicit errors when the dataset root is missing, manifest status is not complete, required parquet partitions are absent, or manifest counts disagree with physical parquet counts.
+
+## External Data Root Workflow (Read-Only)
+
+Use this when published collection data and DuckDB snapshots live outside the repository.
+Do not copy recovered data into the repository and do not hardcode machine-local absolute
+paths into tracked configs.
+
+PowerShell setup (per terminal):
+
+```powershell
+$env:CHESSLENS_DATA_ROOT = "<external-data-root>"
+$env:CHESSLENS_COLLECTION_ID = "<collection-id>"
+$env:CHESSLENS_DUCKDB_PATH = "<external-data-root>/tmp/chesslens_warehouse.duckdb"
+$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH = "reports/local/<warehouse-provenance>.json"
+$env:CHESSLENS_MODELING_MANIFEST_PATH = "data/modeling/datasets/<modeling_dataset_id>/_manifest.json"
+```
+
+Resolved paths now follow these conventions:
+
+- `CHESSLENS_COLLECTION_ROOT` (if set) wins.
+- Otherwise collection root is derived as:
+	`<CHESSLENS_DATA_ROOT>/processed/collections/<CHESSLENS_COLLECTION_ID>`.
+- If `CHESSLENS_DATA_ROOT` contains multiple complete collections and
+	`CHESSLENS_COLLECTION_ID` is not set, commands fail with an ambiguity error that
+	lists candidate collection IDs.
+- `CHESSLENS_DUCKDB_PATH` (or compatibility alias `CHESSLENS_TIER2_DB_PATH`) supplies
+	warehouse DB location.
+- `CHESSLENS_WAREHOUSE_PROVENANCE_PATH` is used by Phase 2.1 modeling.
+- `CHESSLENS_MODELING_MANIFEST_PATH` is used by Phase 2.2 baselines.
+
+Safe read-only checks:
+
+```powershell
+python -m uv run python -m chesslens.warehouse.preflight --skip-register-views
+python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/2017_01_sample.yaml --dry-run
+python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/2017_01_sample.yaml --validate-only
+python -m uv run python -m chesslens.modeling.run_baselines --config configs/baselines/local_real.yaml --dry-run
+python -m uv run python -m chesslens.modeling.run_baselines --config configs/baselines/local_real.yaml --validate-only
+```
+
+Commands that can be expensive or publish artifacts (run intentionally):
+
+- `chesslens.warehouse.preflight` without `--skip-register-views` (writes bronze views to DuckDB)
+- `chesslens.modeling.build_dataset` without `--dry-run`/`--validate-only`
+- `chesslens.modeling.run_baselines` without `--dry-run`/`--validate-only`
 
 ## Phase 1.2c/1.2d Resumable + Parallel Sharding Workflow
 
@@ -324,7 +369,7 @@ python -m uv sync --frozen --dev
 2. Set the modeling manifest path once for this session:
 
 ```powershell
-$env:CHESSLENS_MODELING_MANIFEST = "data/modeling/datasets/REPLACE_WITH_MODELING_DATASET_ID/_manifest.json"
+$env:CHESSLENS_MODELING_MANIFEST_PATH = "data/modeling/datasets/REPLACE_WITH_MODELING_DATASET_ID/_manifest.json"
 ```
 
 3. Real-data dry-run (metadata/counts/estimates only):
@@ -332,7 +377,6 @@ $env:CHESSLENS_MODELING_MANIFEST = "data/modeling/datasets/REPLACE_WITH_MODELING
 ```powershell
 python -m uv run python -m chesslens.modeling.run_baselines `
 	--config configs/baselines/local_real.yaml `
-	--modeling-manifest "$env:CHESSLENS_MODELING_MANIFEST" `
 	--dry-run
 ```
 
@@ -341,7 +385,6 @@ python -m uv run python -m chesslens.modeling.run_baselines `
 ```powershell
 python -m uv run python -m chesslens.modeling.run_baselines `
 	--config configs/baselines/local_real.yaml `
-	--modeling-manifest "$env:CHESSLENS_MODELING_MANIFEST" `
 	--validate-only
 ```
 
@@ -349,8 +392,7 @@ python -m uv run python -m chesslens.modeling.run_baselines `
 
 ```powershell
 python -m uv run python -m chesslens.modeling.run_baselines `
-	--config configs/baselines/local_real.yaml `
-	--modeling-manifest "$env:CHESSLENS_MODELING_MANIFEST"
+	--config configs/baselines/local_real.yaml
 ```
 
 6. Optional full-dataset legality audit (validate-only, no training). This creates a
@@ -361,7 +403,6 @@ $fullAuditConfig = "configs/baselines/local_real_full_legality.yaml"
 (Get-Content configs/baselines/local_real.yaml) -replace "legality_scope: selected", "legality_scope: full" | Set-Content $fullAuditConfig
 python -m uv run python -m chesslens.modeling.run_baselines `
 	--config $fullAuditConfig `
-	--modeling-manifest "$env:CHESSLENS_MODELING_MANIFEST" `
 	--validate-only
 Remove-Item $fullAuditConfig
 ```
@@ -455,9 +496,6 @@ $env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH = "reports/local/phase2_1b_2017_tier2_w
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
-	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
-	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
-	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
 	--output-root data/modeling `
 	--dry-run
 ```
@@ -467,9 +505,6 @@ python -m uv run python -m chesslens.modeling.build_dataset `
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
-	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
-	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
-	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
 	--output-root data/modeling `
 	--max-games 5000 `
 	--max-examples 500000
@@ -480,9 +515,6 @@ python -m uv run python -m chesslens.modeling.build_dataset `
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
-	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
-	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
-	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
 	--output-root data/modeling `
 	--max-games 5000 `
 	--max-examples 500000 `
@@ -494,9 +526,6 @@ python -m uv run python -m chesslens.modeling.build_dataset `
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
-	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
-	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
-	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
 	--output-root data/modeling `
 	--max-games 5000 `
 	--max-examples 500000

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import duckdb
@@ -8,6 +9,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import chesslens.warehouse.collection as collection_module
+import chesslens.warehouse.preflight as preflight_module
 from chesslens.warehouse.preflight import (
     DatasetPreflightError,
     register_bronze_views,
@@ -146,3 +149,88 @@ def test_register_bronze_views_creates_duckdb_views(tmp_path: Path) -> None:
     assert moves_count == 7
     assert errors_count == 1
     assert manifest_count == 1
+
+
+def test_preflight_main_derives_collection_root_from_data_root_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data_root = tmp_path / "external_data"
+    collection_id = "collection-derived-001"
+    expected_collection_root = (
+        data_root / "processed" / "collections" / collection_id
+    )
+    expected_manifest = expected_collection_root / "_collection_manifest.json"
+
+    observed: dict[str, Path | None] = {}
+
+    def _fake_validate_collection_root(
+        collection_root: Path,
+        *,
+        external_data_root: Path | None = None,
+    ) -> collection_module.CollectionPreflightResult:
+        observed["collection_root"] = collection_root
+        observed["external_data_root"] = external_data_root
+        return collection_module.CollectionPreflightResult(
+            collection_root=collection_root,
+            manifest_path=expected_manifest,
+            member_count=1,
+            accepted_games=3,
+            emitted_moves=5,
+            error_records=0,
+        )
+
+    monkeypatch.delenv("CHESSLENS_COLLECTION_ROOT", raising=False)
+    monkeypatch.setenv("CHESSLENS_DATA_ROOT", str(data_root))
+    monkeypatch.setenv("CHESSLENS_COLLECTION_ID", collection_id)
+    monkeypatch.setenv("CHESSLENS_DUCKDB_PATH", str(tmp_path / "warehouse.duckdb"))
+    monkeypatch.setattr(
+        collection_module,
+        "validate_collection_root",
+        _fake_validate_collection_root,
+    )
+    monkeypatch.setattr(sys, "argv", ["preflight", "--skip-register-views"])
+
+    preflight_module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["input_kind"] == "collection"
+    assert observed["collection_root"] == expected_collection_root
+    assert observed["external_data_root"] == data_root
+    assert payload["collection_root"] == expected_collection_root.resolve().as_posix()
+    assert payload["external_data_root"] == data_root.resolve().as_posix()
+
+
+def test_preflight_main_fails_for_ambiguous_collection_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "external_data"
+
+    for collection_id in ("collection-a", "collection-b"):
+        collection_root = data_root / "processed" / "collections" / collection_id
+        collection_root.mkdir(parents=True, exist_ok=True)
+        manifest: dict[str, object] = {
+            "collection_id": collection_id,
+            "status": "complete",
+            "counts": {
+                "accepted_games": 1,
+                "emitted_moves": 1,
+                "error_records": 0,
+            },
+            "shards": [],
+        }
+        (collection_root / "_collection_manifest.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setenv("CHESSLENS_DATA_ROOT", str(data_root))
+    monkeypatch.delenv("CHESSLENS_COLLECTION_ID", raising=False)
+    monkeypatch.delenv("CHESSLENS_COLLECTION_ROOT", raising=False)
+    monkeypatch.delenv("CHESSLENS_DATASET_ROOT", raising=False)
+    monkeypatch.setattr(sys, "argv", ["preflight", "--skip-register-views"])
+
+    with pytest.raises(DatasetPreflightError, match="Candidate complete collection IDs"):
+        preflight_module.main()

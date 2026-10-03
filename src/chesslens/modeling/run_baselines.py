@@ -58,6 +58,7 @@ from chesslens.modeling.validation import (
     sha256_text,
     validate_manifest_identity,
 )
+from chesslens.runtime_paths import resolve_modeling_manifest_override_or_env
 
 WDL_CLASS_ORDER: tuple[str, str, str] = ("win", "draw", "loss")
 DEFAULT_SAMPLED_EVAL_NEGATIVE_CAP = 31
@@ -2909,7 +2910,11 @@ def run_baselines(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Phase 2.2 classical baselines")
     parser.add_argument("--config", default="configs/baselines/fixture_smoke.yaml")
-    parser.add_argument("--modeling-manifest", default=None)
+    parser.add_argument(
+        "--modeling-manifest",
+        default=None,
+        help="Modeling manifest path. Defaults to CHESSLENS_MODELING_MANIFEST_PATH when set.",
+    )
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--max-train-positions", type=int, default=None)
     parser.add_argument("--max-validation-positions", type=int, default=None)
@@ -2924,10 +2929,13 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+    modeling_manifest_path = resolve_modeling_manifest_override_or_env(args.modeling_manifest)
 
     result = run_baselines(
         config_path=Path(args.config),
-        modeling_manifest_override=args.modeling_manifest,
+        modeling_manifest_override=(
+            None if modeling_manifest_path is None else modeling_manifest_path.as_posix()
+        ),
         output_root_override=args.output_root,
         max_train_positions_override=args.max_train_positions,
         max_validation_positions_override=args.max_validation_positions,

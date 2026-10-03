@@ -17,6 +17,11 @@ from chesslens.modeling.provenance import (
     canonical_warehouse_provenance_sha256,
 )
 from chesslens.modeling.validation import canonical_json, read_json_object
+from chesslens.runtime_paths import (
+    RuntimePathResolutionError,
+    resolve_collection_root_override_or_env,
+    resolve_duckdb_path_override_or_env,
+)
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -522,8 +527,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate a warehouse provenance artifact for Phase 2.1b"
     )
-    parser.add_argument("--collection-root", required=True)
-    parser.add_argument("--duckdb-path", required=True)
+    parser.add_argument("--collection-root", default=None)
+    parser.add_argument("--duckdb-path", default=None)
     parser.add_argument("--games-relation", default="main.stg_games")
     parser.add_argument("--move-context-relation", default="main.int_move_context")
     parser.add_argument(
@@ -542,9 +547,27 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    try:
+        collection_root = resolve_collection_root_override_or_env(args.collection_root)
+    except RuntimePathResolutionError as exc:
+        parser.error(str(exc))
+
+    if collection_root is None:
+        parser.error(
+            "collection root is required; pass --collection-root or set "
+            "CHESSLENS_COLLECTION_ROOT (or CHESSLENS_DATA_ROOT + CHESSLENS_COLLECTION_ID)"
+        )
+
+    duckdb_path = resolve_duckdb_path_override_or_env(args.duckdb_path, default_path=None)
+    if duckdb_path is None:
+        parser.error(
+            "duckdb path is required; pass --duckdb-path or set CHESSLENS_DUCKDB_PATH "
+            "(or CHESSLENS_TIER2_DB_PATH)"
+        )
+
     payload = generate_warehouse_provenance(
-        collection_root=Path(args.collection_root),
-        duckdb_path=Path(args.duckdb_path),
+        collection_root=collection_root,
+        duckdb_path=duckdb_path,
         games_relation=str(args.games_relation),
         move_context_relation=str(args.move_context_relation),
         warehouse_kind=str(args.warehouse_kind),
