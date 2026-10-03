@@ -79,6 +79,38 @@ def _fetch_count(connection: duckdb.DuckDBPyConnection, query: str) -> int:
     return int(row[0])
 
 
+def _create_deterministic_sample_marker_duckdb(path: Path) -> None:
+    connection = duckdb.connect(str(path))
+    try:
+        connection.execute("CREATE TABLE main.sample_counts (sampled_games BIGINT)")
+        connection.execute("INSERT INTO main.sample_counts VALUES (1)")
+        connection.execute("CREATE TABLE main.sampled_game_keys (game_id VARCHAR)")
+        connection.execute("INSERT INTO main.sampled_game_keys VALUES ('g1')")
+        connection.execute("CREATE TABLE main.sampled_game_indices (source_game_index BIGINT)")
+        connection.execute("INSERT INTO main.sampled_game_indices VALUES (1)")
+
+        connection.execute("CREATE VIEW main.bronze_games_full AS SELECT 'g1' AS game_id")
+        connection.execute("CREATE VIEW main.bronze_moves_full AS SELECT 'g1' AS game_id")
+        connection.execute(
+            """
+            CREATE VIEW main.bronze_games AS
+            SELECT *
+            FROM main.bronze_games_full
+            WHERE mod(hash(game_id), 10000) < 1000
+            """
+        )
+        connection.execute(
+            """
+            CREATE VIEW main.bronze_moves AS
+            SELECT *
+            FROM main.bronze_moves_full
+            WHERE mod(hash(game_id), 10000) < 1000
+            """
+        )
+    finally:
+        connection.close()
+
+
 def test_validate_published_dataset_root_success(tmp_path: Path) -> None:
     dataset_root = _build_dataset_root(tmp_path, games=3, moves=8, errors=0)
 
@@ -233,4 +265,22 @@ def test_preflight_main_fails_for_ambiguous_collection_selection(
     monkeypatch.setattr(sys, "argv", ["preflight", "--skip-register-views"])
 
     with pytest.raises(DatasetPreflightError, match="Candidate complete collection IDs"):
+        preflight_module.main()
+
+
+def test_preflight_main_rejects_register_mode_for_sampled_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampled_duckdb = tmp_path / "sampled_snapshot.duckdb"
+    _create_deterministic_sample_marker_duckdb(sampled_duckdb)
+
+    collection_root = tmp_path / "collection"
+    collection_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("CHESSLENS_COLLECTION_ROOT", str(collection_root))
+    monkeypatch.setenv("CHESSLENS_DUCKDB_PATH", str(sampled_duckdb))
+    monkeypatch.setattr(sys, "argv", ["preflight"])
+
+    with pytest.raises(DatasetPreflightError, match="deterministic_sample"):
         preflight_module.main()

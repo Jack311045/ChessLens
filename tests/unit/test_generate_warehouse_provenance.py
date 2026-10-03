@@ -174,6 +174,38 @@ def test_generate_sampled_provenance_fails_for_sample_count_mismatch(tmp_path: P
         )
 
 
+def test_generate_sampled_provenance_rejects_mixed_full_sample_population(
+    tmp_path: Path,
+) -> None:
+    collection_root = tmp_path / "collection"
+    duckdb_path = tmp_path / "warehouse.duckdb"
+    output_path = tmp_path / "warehouse_provenance.json"
+    evidence_path = tmp_path / "sampling_evidence.json"
+
+    _write_collection_manifest(collection_root, games=10, moves=20)
+    _create_duckdb(duckdb_path, games=4, moves=20)
+    _write_sampling_evidence(
+        evidence_path,
+        full_games=10,
+        full_moves=20,
+        sampled_games=4,
+        sampled_moves=8,
+    )
+
+    with pytest.raises(RuntimeError, match="sampled_counts do not match"):
+        generate_warehouse_provenance(
+            collection_root=collection_root,
+            duckdb_path=duckdb_path,
+            games_relation="main.stg_games",
+            move_context_relation="main.int_move_context",
+            warehouse_kind="deterministic_sample",
+            sampling_evidence_path=evidence_path,
+            output_path=output_path,
+            dbt_project_root=Path("dbt"),
+            allow_overwrite_incompatible=False,
+        )
+
+
 def test_generate_provenance_refuses_incompatible_overwrite_without_flag(tmp_path: Path) -> None:
     collection_root = tmp_path / "collection"
     duckdb_path = tmp_path / "warehouse.duckdb"
