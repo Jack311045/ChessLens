@@ -250,6 +250,26 @@ Commands that can be expensive or publish artifacts (run intentionally):
 - `chesslens.modeling.build_dataset` without `--dry-run`/`--validate-only`
 - `chesslens.modeling.run_baselines` without `--dry-run`/`--validate-only`
 
+Important sampled-snapshot safety rule:
+
+- If `CHESSLENS_DUCKDB_PATH` points to a deterministic sample warehouse snapshot,
+	collection preflight now refuses write/register mode to prevent sampled/full
+	population drift.
+- Use `--skip-register-views` for read-only validation, or run sampled relocation:
+
+```powershell
+python -m uv run python -m chesslens.warehouse.relocate_sampled_snapshot `
+	--source-duckdb "<recovered-sampled-duckdb>" `
+	--target-directory "<working-directory>" `
+	--collection-root "<external-collection-root>" `
+	--collection-id "<collection-id>" `
+	--sampling-evidence-path "<sampling-evidence-json>" `
+	--expected-sampled-games <sampled-games> `
+	--expected-sampled-moves <sampled-moves> `
+	--expected-full-games <full-games> `
+	--expected-full-moves <full-moves>
+```
+
 ## Phase 1.2c/1.2d Resumable + Parallel Sharding Workflow
 
 Large monthly archives are processed over multiple sessions by splitting them into

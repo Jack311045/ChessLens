@@ -17,6 +17,10 @@ from chesslens.runtime_paths import (
     resolve_duckdb_path_override_or_env,
     resolve_external_data_root_env,
 )
+from chesslens.warehouse.sampled_snapshot import (
+    SampledSnapshotError,
+    ensure_safe_full_collection_registration_target,
+)
 
 
 class DatasetPreflightError(RuntimeError):
@@ -296,6 +300,12 @@ def main() -> None:
             register_collection_bronze_views,
             validate_collection_root,
         )
+
+        if not args.skip_register_views:
+            try:
+                ensure_safe_full_collection_registration_target(duckdb_path)
+            except SampledSnapshotError as exc:
+                raise DatasetPreflightError(str(exc)) from exc
 
         if args.skip_register_views:
             collection_result = validate_collection_root(

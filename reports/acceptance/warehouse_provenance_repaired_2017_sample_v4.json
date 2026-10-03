@@ -1,0 +1,84 @@
+{
+  "collection_id": "56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb",
+  "provenance_version": "warehouse_provenance_v1",
+  "relations": {
+    "games_relation": "main.stg_games",
+    "move_context_relation": "main.int_move_context"
+  },
+  "sampling": {
+    "effective_rate_percent": 10.002756434357686,
+    "hash_modulus": 10000,
+    "hash_threshold": 1000,
+    "parent_collection_id": "56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb",
+    "parent_full_counts": {
+      "games": 10644186,
+      "moves": 718564684
+    },
+    "requested_rate_percent": 10.0,
+    "sampled_counts": {
+      "games": 1064712,
+      "moves": 71831105
+    },
+    "sampling_predicate": "mod(hash(game_id), 10000) < 1000",
+    "sampling_rule_version": "sha256_mod_v1"
+  },
+  "snapshot_counts": {
+    "games": 1064712,
+    "moves": 71831105
+  },
+  "transformation_identity": {
+    "identity_kind": "dbt_project_fingerprint_v1",
+    "identity_value": "fdb8419755405497d232d783b89fcccc6549ff27104dd10c977a93f73efb0bd8"
+  },
+  "transformation_identity_details": {
+    "files": [
+      {
+        "path": "dbt/dbt_project.yml",
+        "sha256": "50bf6fefe0e5b4a4b3fb5ca2190d9cb6a475027605613d6f4d7e2db1d8bdc12c"
+      },
+      {
+        "path": "dbt/models/intermediate/int_move_context.sql",
+        "sha256": "e7a52b21a01b91bfc7c54e0083db9464e8f8eccf37f9888d31aab3fa1e41f56d"
+      },
+      {
+        "path": "dbt/models/intermediate/int_positions.sql",
+        "sha256": "84e87fe9d24aa5f586685f3c47e0c65e97ba48f72518f5b5bfd3581e4dd4c429"
+      },
+      {
+        "path": "dbt/models/marts/fct_move_events.sql",
+        "sha256": "cb959d3b63f18c5d645d231e4c549772921fee37ef931ce1b772db58935dae5e"
+      },
+      {
+        "path": "dbt/models/marts/mart_policy_examples.sql",
+        "sha256": "3257acee8550f54776cda444d9443e915ebf02413bbfac53f46632b870951360"
+      },
+      {
+        "path": "dbt/models/schema.yml",
+        "sha256": "26853039c33ca7c79739f37a5fee7a69fdc3d7b1526e3be384a4cff11dd5280f"
+      },
+      {
+        "path": "dbt/models/sources.yml",
+        "sha256": "58ac362e72a93ed852749dd321c5e498043509ed3869356e23f9af1b4758c34b"
+      },
+      {
+        "path": "dbt/models/staging/stg_games.sql",
+        "sha256": "a30c4785aceb06a8127354a09d43aa4c27bca0e1589dc177dd3784b4f8b8e717"
+      },
+      {
+        "path": "dbt/models/staging/stg_ingestion_errors.sql",
+        "sha256": "ad69fc4bc6ebb739eb81a8ede20e090879c0be1fe1394834b70b9ba77e23e2e3"
+      },
+      {
+        "path": "dbt/models/staging/stg_manifest.sql",
+        "sha256": "7c2243763679098ec37e8cb6ee69709f4b67a8e4b396e663a2ccaf273448aef7"
+      },
+      {
+        "path": "dbt/models/staging/stg_moves.sql",
+        "sha256": "13e28a44a4f5ca8604c77298b081899ec70fa528dcd80a5b6099d6418b7a0759"
+      }
+    ],
+    "fingerprint_version": "dbt_project_fingerprint_v1"
+  },
+  "warehouse_kind": "deterministic_sample",
+  "warehouse_provenance_sha256": "3454da7b0e9cd368a6817c5db560c9e8bf43fb3b6babc16d062e76483dbfe8e8"
+}
