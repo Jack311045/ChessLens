@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import duckdb
@@ -49,7 +49,86 @@ def _sql_file_list(paths: list[str]) -> str:
     return "[" + ", ".join(f"'{p}'" for p in escaped) + "]"
 
 
-def validate_collection_root(collection_root: Path) -> CollectionPreflightResult:
+def _looks_absolute_path(path_text: str) -> bool:
+    return Path(path_text).is_absolute() or PureWindowsPath(path_text).is_absolute()
+
+
+def _split_manifest_path(path_text: str) -> list[str]:
+    normalized = path_text.replace("\\", "/")
+    return [part for part in normalized.split("/") if part and part != "."]
+
+
+def _relative_member_subpath(path_text: str) -> Path:
+    parts = _split_manifest_path(path_text)
+    if not parts:
+        raise DatasetPreflightError("Collection shard dataset_relpath must be non-empty")
+    if any(part == ".." for part in parts):
+        raise DatasetPreflightError(
+            "Collection shard dataset_relpath contains parent traversal segments"
+        )
+    return Path(*parts)
+
+
+def _extract_relocation_tail(path_text: str) -> Path:
+    parts = _split_manifest_path(path_text)
+    lowered = [part.lower() for part in parts]
+    if "shards" not in lowered:
+        raise DatasetPreflightError(
+            "Collection shard dataset_relpath is absolute and cannot be relocated; "
+            "expected a path containing 'shards/.../datasets/<dataset_id>'"
+        )
+    shard_start = lowered.index("shards")
+    tail_parts = parts[shard_start:]
+    if any(part == ".." for part in tail_parts):
+        raise DatasetPreflightError(
+            "Collection shard relocation tail contains parent traversal segments"
+        )
+    return Path(*tail_parts)
+
+
+def _resolve_member_root(
+    *,
+    collection_root: Path,
+    dataset_relpath: str,
+    external_data_root: Path | None,
+) -> Path:
+    collection_root_resolved = collection_root.resolve()
+
+    if _looks_absolute_path(dataset_relpath):
+        relative_tail = _extract_relocation_tail(dataset_relpath)
+        member_root = (collection_root_resolved / relative_tail).resolve()
+    else:
+        relative_path = _relative_member_subpath(dataset_relpath)
+        member_root = (collection_root_resolved / relative_path).resolve()
+
+    if not member_root.is_relative_to(collection_root_resolved):
+        raise DatasetPreflightError(
+            "Collection shard dataset_relpath resolves outside collection root: "
+            f"{dataset_relpath!r}"
+        )
+
+    if external_data_root is not None:
+        external_root_resolved = external_data_root.resolve()
+        if not member_root.is_relative_to(external_root_resolved):
+            raise DatasetPreflightError(
+                "Collection shard dataset path resolves outside CHESSLENS_DATA_ROOT: "
+                f"{member_root.as_posix()}"
+            )
+
+    if not member_root.is_dir():
+        raise DatasetPreflightError(
+            "Collection member dataset missing after relocation resolution: "
+            f"{member_root.as_posix()} (manifest dataset_relpath={dataset_relpath!r})"
+        )
+
+    return member_root
+
+
+def validate_collection_root(
+    collection_root: Path,
+    *,
+    external_data_root: Path | None = None,
+) -> CollectionPreflightResult:
     if not collection_root.is_dir():
         raise DatasetPreflightError(
             f"CHESSLENS_COLLECTION_ROOT must be a directory: {collection_root.as_posix()}"
@@ -67,11 +146,11 @@ def validate_collection_root(collection_root: Path) -> CollectionPreflightResult
     moves_files: list[str] = []
     errors_files: list[str] = []
     for entry in entries:
-        member_root = collection_root / entry.dataset_relpath
-        if not member_root.is_dir():
-            raise DatasetPreflightError(
-                f"Collection member dataset missing: {member_root.as_posix()}"
-            )
+        member_root = _resolve_member_root(
+            collection_root=collection_root,
+            dataset_relpath=entry.dataset_relpath,
+            external_data_root=external_data_root,
+        )
         games_files += [p.resolve().as_posix() for p in _member_parquet_files(member_root, "games")]
         moves_files += [p.resolve().as_posix() for p in _member_parquet_files(member_root, "moves")]
         errors_files += [
@@ -120,8 +199,12 @@ def register_collection_bronze_views(
     duckdb_path: Path,
     memory_limit: str,
     temp_directory: Path,
+    external_data_root: Path | None = None,
 ) -> CollectionPreflightResult:
-    result = validate_collection_root(collection_root)
+    result = validate_collection_root(
+        collection_root,
+        external_data_root=external_data_root,
+    )
     manifest = load_collection_manifest(result.manifest_path)
     entries = parse_collection_entries(manifest)
 
@@ -129,7 +212,11 @@ def register_collection_bronze_views(
     moves_files: list[str] = []
     errors_files: list[str] = []
     for entry in entries:
-        member_root = collection_root / entry.dataset_relpath
+        member_root = _resolve_member_root(
+            collection_root=collection_root,
+            dataset_relpath=entry.dataset_relpath,
+            external_data_root=external_data_root,
+        )
         games_files += [p.resolve().as_posix() for p in _member_parquet_files(member_root, "games")]
         moves_files += [p.resolve().as_posix() for p in _member_parquet_files(member_root, "moves")]
         errors_files += [

@@ -56,6 +56,11 @@ from chesslens.modeling.validation import (
     validate_relative_artifact_paths,
 )
 from chesslens.modeling.writer import ModelingParquetWriter, PartitionWriteStats
+from chesslens.runtime_paths import (
+    resolve_collection_root_override_or_env,
+    resolve_duckdb_path_override_or_env,
+    resolve_warehouse_provenance_path_override_or_env,
+)
 
 
 @dataclass(frozen=True)
@@ -1596,12 +1601,31 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
+    collection_root_override = resolve_collection_root_override_or_env(args.collection_root)
+    duckdb_path_override = resolve_duckdb_path_override_or_env(
+        args.duckdb_path,
+        default_path=None,
+    )
+    warehouse_provenance_path_override = resolve_warehouse_provenance_path_override_or_env(
+        args.warehouse_provenance_path
+    )
+
     result = run_modeling_dataset_build(
         config_path=Path(args.config),
-        collection_root_override=args.collection_root,
+        collection_root_override=(
+            None
+            if collection_root_override is None
+            else collection_root_override.as_posix()
+        ),
         output_root_override=args.output_root,
-        duckdb_path_override=args.duckdb_path,
-        warehouse_provenance_path_override=args.warehouse_provenance_path,
+        duckdb_path_override=(
+            None if duckdb_path_override is None else duckdb_path_override.as_posix()
+        ),
+        warehouse_provenance_path_override=(
+            None
+            if warehouse_provenance_path_override is None
+            else warehouse_provenance_path_override.as_posix()
+        ),
         max_games_override=args.max_games,
         max_examples_override=args.max_examples,
         dry_run=bool(args.dry_run),

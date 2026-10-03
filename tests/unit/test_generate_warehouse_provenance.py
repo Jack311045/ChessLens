@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pytest
 
+import chesslens.modeling.generate_warehouse_provenance as provenance_module
 from chesslens.modeling.generate_warehouse_provenance import generate_warehouse_provenance
 from chesslens.modeling.provenance import load_warehouse_provenance
 
@@ -224,3 +226,46 @@ def test_generate_provenance_refuses_incompatible_overwrite_without_flag(tmp_pat
     )
 
     assert first["warehouse_provenance_sha256"] != second["warehouse_provenance_sha256"]
+
+
+def test_generate_warehouse_provenance_main_uses_env_path_fallbacks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    collection_root = tmp_path / "collection"
+    duckdb_path = tmp_path / "warehouse.duckdb"
+    output_path = tmp_path / "warehouse_provenance.json"
+
+    observed: dict[str, object] = {}
+
+    def _fake_generate_warehouse_provenance(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"status": "ok"}
+
+    monkeypatch.setenv("CHESSLENS_COLLECTION_ROOT", str(collection_root))
+    monkeypatch.setenv("CHESSLENS_DUCKDB_PATH", str(duckdb_path))
+    monkeypatch.setattr(
+        provenance_module,
+        "generate_warehouse_provenance",
+        _fake_generate_warehouse_provenance,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "generate_warehouse_provenance",
+            "--warehouse-kind",
+            "fixture",
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    provenance_module.main()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"status": "ok"}
+    assert observed["collection_root"] == collection_root
+    assert observed["duckdb_path"] == duckdb_path
+    assert observed["output_path"] == output_path
