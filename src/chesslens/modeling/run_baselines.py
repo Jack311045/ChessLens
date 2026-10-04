@@ -52,6 +52,7 @@ from chesslens.modeling.baselines_metrics import (
     reliability_bins_per_class,
 )
 from chesslens.modeling.labels import rating_band, time_control_category
+from chesslens.modeling.sampling import select_by_hash_mod
 from chesslens.modeling.validation import (
     canonical_json,
     read_json_object,
@@ -198,6 +199,10 @@ class PreflightSummary:
     game_id_overlap_counts: dict[str, int]
     normalized_fen_overlap_counts: dict[str, int]
     player_overlap_counts: dict[str, int]
+    player_holdout_rule_version: str
+    player_holdout_seed: str
+    player_holdout_hash_modulus: int
+    player_holdout_hash_threshold: int
 
 
 @dataclass(frozen=True)
@@ -285,6 +290,44 @@ def _load_manifest_identity(manifest_path: Path) -> tuple[dict[str, Any], str]:
     payload = read_json_object(manifest_path)
     manifest_hash = sha256_text(canonical_json(payload))
     return payload, manifest_hash
+
+
+def _manifest_player_holdout_config(
+    manifest: dict[str, Any],
+) -> tuple[str, str, int, int]:
+    player_holdout = manifest.get("player_holdout")
+    if not isinstance(player_holdout, dict):
+        raise RuntimeError("Modeling manifest missing player_holdout object")
+
+    rule_version = str(player_holdout.get("rule_version", "")).strip()
+    seed = str(player_holdout.get("seed", "")).strip()
+    if not rule_version:
+        raise RuntimeError("Modeling manifest missing player_holdout.rule_version")
+    if not seed:
+        raise RuntimeError("Modeling manifest missing player_holdout.seed")
+
+    hash_modulus_raw = player_holdout.get("hash_modulus")
+    hash_threshold_raw = player_holdout.get("hash_threshold")
+    if not isinstance(hash_modulus_raw, int) or isinstance(hash_modulus_raw, bool):
+        raise RuntimeError(
+            "Modeling manifest has invalid player_holdout.hash_modulus; expected integer"
+        )
+    if not isinstance(hash_threshold_raw, int) or isinstance(hash_threshold_raw, bool):
+        raise RuntimeError(
+            "Modeling manifest has invalid player_holdout.hash_threshold; expected integer"
+        )
+
+    hash_modulus = hash_modulus_raw
+    hash_threshold = hash_threshold_raw
+
+    if hash_modulus <= 0:
+        raise RuntimeError("Modeling manifest player_holdout.hash_modulus must be positive")
+    if hash_threshold < 0:
+        raise RuntimeError(
+            "Modeling manifest player_holdout.hash_threshold must be non-negative"
+        )
+
+    return rule_version, seed, hash_modulus, hash_threshold
 
 
 def _required_partition_paths(
@@ -538,6 +581,13 @@ def _preflight_modeling_dataset(config: BaselineConfig) -> PreflightSummary:
     if not isinstance(versions, dict):
         raise RuntimeError("Modeling manifest missing versions object")
 
+    (
+        player_holdout_rule_version,
+        player_holdout_seed,
+        player_holdout_hash_modulus,
+        player_holdout_hash_threshold,
+    ) = _manifest_player_holdout_config(manifest)
+
     feature_schema_version = str(versions.get("feature_schema_version", "")).strip()
     split_definition_version = str(
         manifest.get("splits", {}).get("definition_version", "")
@@ -653,6 +703,10 @@ def _preflight_modeling_dataset(config: BaselineConfig) -> PreflightSummary:
         game_id_overlap_counts=game_id_overlap_counts,
         normalized_fen_overlap_counts=normalized_fen_overlap_counts,
         player_overlap_counts=player_overlap_counts,
+        player_holdout_rule_version=player_holdout_rule_version,
+        player_holdout_seed=player_holdout_seed,
+        player_holdout_hash_modulus=player_holdout_hash_modulus,
+        player_holdout_hash_threshold=player_holdout_hash_threshold,
     )
 
 
@@ -815,12 +869,32 @@ def _player_hashes_for_examples(
     return player_hashes
 
 
+def _is_holdout_player_by_manifest_rule(
+    player_hash: str,
+    *,
+    seed: str,
+    hash_modulus: int,
+    hash_threshold: int,
+) -> bool:
+    selected, _ = select_by_hash_mod(
+        namespace="player_holdout",
+        token=player_hash,
+        seed=seed,
+        hash_modulus=hash_modulus,
+        hash_threshold=hash_threshold,
+    )
+    return selected
+
+
 def _select_training_population(
     train_examples: list[PositionExample],
     *,
     mode: str,
     all_selected_examples_by_split: dict[str, list[PositionExample]],
     game_assignment_paths_by_split: dict[str, list[Path]],
+    player_holdout_seed: str,
+    player_holdout_hash_modulus: int,
+    player_holdout_hash_threshold: int,
 ) -> tuple[list[PositionExample], TrainingPopulationSummary]:
     full_count = len(train_examples)
     eligible_train_examples = [
@@ -838,14 +912,20 @@ def _select_training_population(
                 "player_disjoint training population contains holdout-flagged rows"
             )
 
-        heldout_examples_by_split = {
-            split: [example for example in examples if example.is_player_holdout_game]
-            for split, examples in all_selected_examples_by_split.items()
-        }
-        heldout_players = _player_hashes_for_examples(
-            heldout_examples_by_split,
+        selected_players = _player_hashes_for_examples(
+            all_selected_examples_by_split,
             game_assignment_paths_by_split,
         )
+        heldout_players = {
+            player_hash
+            for player_hash in selected_players
+            if _is_holdout_player_by_manifest_rule(
+                player_hash,
+                seed=player_holdout_seed,
+                hash_modulus=player_holdout_hash_modulus,
+                hash_threshold=player_holdout_hash_threshold,
+            )
+        }
         eligible_players = _player_hashes_for_examples(
             {"train": eligible_train_examples},
             game_assignment_paths_by_split,
@@ -2029,6 +2109,9 @@ def run_baselines(
         mode=config.training_population.mode,
         all_selected_examples_by_split=selected_examples_by_split,
         game_assignment_paths_by_split=preflight.game_assignment_paths_by_split,
+        player_holdout_seed=preflight.player_holdout_seed,
+        player_holdout_hash_modulus=preflight.player_holdout_hash_modulus,
+        player_holdout_hash_threshold=preflight.player_holdout_hash_threshold,
     )
 
     if not training_examples:
