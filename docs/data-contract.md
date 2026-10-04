@@ -495,8 +495,11 @@ Key fields:
 - `played_date_iso` from canonical resolver input;
 - `played_date_source` in `{utc_date, date, missing_or_invalid, legacy_played_date}`;
 - deterministic `sample_score_u64` from hash-rule sampling;
-- `is_player_holdout_game` and `player_disjoint_training_eligible` derived from
-	deterministic player-hash holdout policy.
+- `white_player_is_holdout` and `black_player_is_holdout` are deterministic
+	player-level holdout flags;
+- `is_player_holdout_game = white_player_is_holdout OR black_player_is_holdout`;
+- `player_disjoint_training_eligible` is true only when split is train, neither
+	player is held out, and missing-player policy allows the row.
 
 Invariants:
 

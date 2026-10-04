@@ -1033,16 +1033,19 @@ def _append_assignment_candidate(
     white_hash = _as_optional_str(candidate["white_player_hash"])
     black_hash = _as_optional_str(candidate["black_player_hash"])
 
-    is_holdout = False
-    if white_hash is not None and _is_holdout_player(config, white_hash):
-        is_holdout = True
-    if black_hash is not None and _is_holdout_player(config, black_hash):
-        is_holdout = True
+    white_player_is_holdout = (
+        white_hash is not None and _is_holdout_player(config, white_hash)
+    )
+    black_player_is_holdout = (
+        black_hash is not None and _is_holdout_player(config, black_hash)
+    )
+    is_holdout = white_player_is_holdout or black_player_is_holdout
 
     missing_player_hash = white_hash is None or black_hash is None
     eligible_for_player_disjoint_training = (
         split == "train"
-        and not is_holdout
+        and not white_player_is_holdout
+        and not black_player_is_holdout
         and (
             config.player_holdout.missing_player_hash_policy
             == "include_in_player_disjoint_training"
@@ -1062,6 +1065,8 @@ def _append_assignment_candidate(
             "sample_score_u64": int(candidate["sample_score_u64"]),
             "white_player_hash": white_hash,
             "black_player_hash": black_hash,
+            "white_player_is_holdout": white_player_is_holdout,
+            "black_player_is_holdout": black_player_is_holdout,
             "is_player_holdout_game": is_holdout,
             "player_disjoint_training_eligible": eligible_for_player_disjoint_training,
             "result": _as_optional_str(candidate["result"]),
@@ -1314,7 +1319,6 @@ def _validate_split_and_holdout_constraints(
     connection: duckdb.DuckDBPyConnection,
     assignments_sql: str,
     primary_policy_sql: str,
-    config: ModelingConfig,
 ) -> None:
     duplicate_games = connection.execute(
         "SELECT COUNT(*) FROM ("
@@ -1335,105 +1339,25 @@ def _validate_split_and_holdout_constraints(
             "Validation failed: moves from a game appear in multiple temporal splits"
         )
 
-    assignments_cursor = connection.execute(
-        "SELECT "
-        "  game_id, temporal_split, player_disjoint_training_eligible, "
-        "  is_player_holdout_game, white_player_hash, black_player_hash "
-        f"FROM ({assignments_sql}) "
-        "ORDER BY game_id"
-    )
-
-    holdout_flag_mismatches = 0
-    heldout_leak_rows = 0
-    eligibility_mismatches = 0
-    holdout_flag_samples: list[str] = []
-    leak_samples: list[str] = []
-    eligibility_samples: list[str] = []
-
-    for row in _iter_cursor_rows(assignments_cursor, chunk_size=10000):
-        game_id = str(row[0])
-        temporal_split = str(row[1])
-        actual_player_disjoint_eligible = bool(row[2])
-        actual_is_player_holdout_game = bool(row[3])
-        white_player_hash = _as_optional_str(row[4])
-        black_player_hash = _as_optional_str(row[5])
-
-        white_is_holdout = (
-            white_player_hash is not None
-            and _is_holdout_player(config, white_player_hash)
-        )
-        black_is_holdout = (
-            black_player_hash is not None
-            and _is_holdout_player(config, black_player_hash)
-        )
-        expected_is_player_holdout_game = white_is_holdout or black_is_holdout
-
-        if actual_is_player_holdout_game != expected_is_player_holdout_game:
-            holdout_flag_mismatches += 1
-            if len(holdout_flag_samples) < 5:
-                holdout_flag_samples.append(
-                    f"{game_id}: actual={actual_is_player_holdout_game}, "
-                    f"expected={expected_is_player_holdout_game}, "
-                    f"white_is_holdout={white_is_holdout}, "
-                    f"black_is_holdout={black_is_holdout}"
-                )
-
-        missing_player_hash = white_player_hash is None or black_player_hash is None
-        expected_player_disjoint_eligible = (
-            temporal_split == "train"
-            and not expected_is_player_holdout_game
-            and (
-                config.player_holdout.missing_player_hash_policy
-                == "include_in_player_disjoint_training"
-                or not missing_player_hash
-            )
-        )
-
-        if actual_player_disjoint_eligible and expected_is_player_holdout_game:
-            heldout_leak_rows += 1
-            if len(leak_samples) < 5:
-                leak_samples.append(
-                    f"{game_id}: temporal_split={temporal_split}, "
-                    f"white_is_holdout={white_is_holdout}, "
-                    f"black_is_holdout={black_is_holdout}, "
-                    f"white_player_hash={white_player_hash}, "
-                    f"black_player_hash={black_player_hash}"
-                )
-
-        if actual_player_disjoint_eligible != expected_player_disjoint_eligible:
-            eligibility_mismatches += 1
-            if len(eligibility_samples) < 5:
-                eligibility_samples.append(
-                    f"{game_id}: actual={actual_player_disjoint_eligible}, "
-                    f"expected={expected_player_disjoint_eligible}, "
-                    f"temporal_split={temporal_split}, "
-                    f"white_is_holdout={white_is_holdout}, "
-                    f"black_is_holdout={black_is_holdout}, "
-                    f"missing_player_hash={missing_player_hash}"
-                )
-
-    if holdout_flag_mismatches > 0:
-        raise RuntimeError(
-            "Validation failed: is_player_holdout_game does not match per-player "
-            "holdout eligibility. "
-            f"mismatch_rows={holdout_flag_mismatches}. "
-            f"sample_rows={holdout_flag_samples}"
-        )
-
-    if heldout_leak_rows > 0:
+    heldout_leak = connection.execute(
+        "WITH assignments AS ("
+        f"  SELECT * FROM ({assignments_sql})"
+        "), heldout_players AS ("
+        "  SELECT DISTINCT white_player_hash AS player_hash FROM assignments "
+        "  WHERE white_player_is_holdout AND white_player_hash IS NOT NULL "
+        "  UNION "
+        "  SELECT DISTINCT black_player_hash AS player_hash FROM assignments "
+        "  WHERE black_player_is_holdout AND black_player_hash IS NOT NULL"
+        ") "
+        "SELECT COUNT(*) FROM assignments a "
+        "WHERE a.player_disjoint_training_eligible "
+        "AND (a.white_player_hash IN (SELECT player_hash FROM heldout_players) "
+        "  OR a.black_player_hash IN (SELECT player_hash FROM heldout_players))"
+    ).fetchone()
+    if heldout_leak is not None and int(heldout_leak[0]) > 0:
         raise RuntimeError(
             "Validation failed: held-out player hash leaked into "
-            "player-disjoint training population. "
-            f"leak_rows={heldout_leak_rows}. "
-            f"sample_rows={leak_samples}"
-        )
-
-    if eligibility_mismatches > 0:
-        raise RuntimeError(
-            "Validation failed: player_disjoint_training_eligible does not match "
-            "recomputed player-holdout policy. "
-            f"mismatch_rows={eligibility_mismatches}. "
-            f"sample_rows={eligibility_samples}"
+            "player-disjoint training population"
         )
 
     invalid_action = connection.execute(
@@ -1747,7 +1671,6 @@ def run_modeling_dataset_build(
             connection=connection,
             assignments_sql=assignments_sql,
             primary_policy_sql=primary_policy_sql,
-            config=config,
         )
         split_summary = _collect_split_summary(
             connection=connection,

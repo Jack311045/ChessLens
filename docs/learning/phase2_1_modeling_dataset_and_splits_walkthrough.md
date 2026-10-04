@@ -80,6 +80,33 @@ Player-disjoint training eligibility is derived from deterministic hash rules ov
 This supports experiments where some players are excluded from the core train
 population while preserving reproducibility.
 
+Beginner model:
+
+- `white_player_is_holdout`: whether white player hash is selected by the holdout rule.
+- `black_player_is_holdout`: whether black player hash is selected by the holdout rule.
+- `is_player_holdout_game`: `white_player_is_holdout OR black_player_is_holdout`.
+
+Important: holdout is a player-level concept first, then lifted to game-level.
+
+- If A is held out and B is not, an A-vs-B game is a holdout game.
+- But B is still not a held-out player.
+
+`player_disjoint_training_eligible` is true only when all of these are true:
+
+- temporal split is `train`,
+- white player is not individually held out,
+- black player is not individually held out,
+- missing-player policy allows the row.
+
+Why this matters for leakage validation:
+
+- A buggy validator can over-expand the held-out set by treating both opponents
+  in a holdout game as held out.
+- That creates false leakage reports when a normal opponent appears later in an
+  otherwise eligible train game.
+- Correct validation must use explicit per-player holdout flags, not just the
+  game-level holdout flag.
+
 ## 5. Label Construction
 
 For each selected move row:
