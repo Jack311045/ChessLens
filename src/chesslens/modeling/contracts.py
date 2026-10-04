@@ -63,6 +63,7 @@ GAME_ASSIGNMENT_ARROW_SCHEMA = pa.schema(
         pa.field("source_month", pa.string(), nullable=True),
         pa.field("played_date_raw", pa.string(), nullable=True),
         pa.field("played_date_iso", pa.string(), nullable=True),
+        pa.field("played_date_source", pa.string(), nullable=False),
         pa.field("temporal_split", pa.string(), nullable=False),
         pa.field("temporal_split_reason", pa.string(), nullable=False),
         pa.field("sample_score_u64", pa.uint64(), nullable=False),
@@ -89,6 +90,7 @@ POLICY_EXAMPLE_ARROW_SCHEMA = pa.schema(
         pa.field("temporal_split", pa.string(), nullable=False),
         pa.field("source_month", pa.string(), nullable=True),
         pa.field("played_date_iso", pa.string(), nullable=True),
+        pa.field("played_date_source", pa.string(), nullable=False),
         pa.field("position_id", pa.string(), nullable=False),
         pa.field("pre_move_fen", pa.string(), nullable=False),
         pa.field("normalized_pre_move_fen", pa.string(), nullable=False),
@@ -148,6 +150,7 @@ def default_feature_label_contract() -> FeatureLabelContract:
             "opening",
             "source_month",
             "played_date_iso",
+            "played_date_source",
         ),
         context_feature_columns=(
             "player_disjoint_training_eligible",

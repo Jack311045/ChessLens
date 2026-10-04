@@ -37,6 +37,8 @@ class ModelingInputConfig:
     collection_root: Path
     duckdb_path: Path
     warehouse_provenance_path: Path
+    date_enrichment_manifest_path: Path | None
+    require_date_enrichment: bool
     expected_collection_id: str | None
     move_context_relation: str
     games_relation: str
@@ -192,6 +194,12 @@ def _resolve_path(value: str) -> Path:
     return Path.cwd() / path
 
 
+def _resolve_optional_path(value: str | None) -> Path | None:
+    if value is None:
+        return None
+    return _resolve_path(value)
+
+
 def _parse_date(value: Any, *, field_name: str) -> datetime:
     text = _as_non_empty_string(value, field_name=field_name)
     try:
@@ -248,6 +256,13 @@ def load_modeling_config(path: str | Path) -> ModelingConfig:
                 raw_input.get("warehouse_provenance_path", ""),
                 field_name="input.warehouse_provenance_path",
             )
+        ),
+        date_enrichment_manifest_path=_resolve_optional_path(
+            _as_optional_string(raw_input.get("date_enrichment_manifest_path"))
+        ),
+        require_date_enrichment=_as_bool(
+            raw_input.get("require_date_enrichment", False),
+            field_name="input.require_date_enrichment",
         ),
         expected_collection_id=_as_optional_string(raw_input.get("expected_collection_id")),
         move_context_relation=_as_non_empty_string(
@@ -486,6 +501,7 @@ def apply_cli_overrides(
     output_root: str | None,
     duckdb_path: str | None,
     warehouse_provenance_path: str | None,
+    date_enrichment_manifest_path: str | None = None,
     max_games: int | None,
     max_examples: int | None,
 ) -> ModelingConfig:
@@ -498,6 +514,11 @@ def apply_cli_overrides(
         new_input = replace(
             new_input,
             warehouse_provenance_path=_resolve_path(warehouse_provenance_path),
+        )
+    if date_enrichment_manifest_path is not None:
+        new_input = replace(
+            new_input,
+            date_enrichment_manifest_path=_resolve_path(date_enrichment_manifest_path),
         )
 
     new_sampling = config.sampling

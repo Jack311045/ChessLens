@@ -30,6 +30,12 @@ exact DuckDB snapshot used for modeling.
 - config field: `input.warehouse_provenance_path`
 - CLI override: `--warehouse-provenance-path`
 
+Phase 2.1 temporal splitting can also consume a UTCDate-first enrichment sidecar:
+
+- config field: `input.date_enrichment_manifest_path`
+- config field: `input.require_date_enrichment`
+- CLI override: `--date-enrichment-manifest-path`
+
 Why this matters (beginner version):
 
 - `collection_id` tells you which source collection was used,
@@ -53,7 +59,11 @@ Sampling is deterministic at game grain using hash-mod rules:
 
 - `selected = (hash(namespace|seed|game_id) % hash_modulus) < hash_threshold`
 
-Temporal split is assigned once per game from `played_date`:
+Temporal split is assigned once per game from canonical played-date input:
+
+- canonical source priority: valid `UTCDate` -> valid `Date` -> missing/invalid
+- canonical date is materialized in sidecar as `canonical_played_date_iso`
+- `game_assignments.played_date_raw` keeps upstream `stg_games.played_date` unchanged
 
 - train range
 - validation range
@@ -149,6 +159,7 @@ python -m uv run python -m chesslens.modeling.build_dataset `
   --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
   --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
   --warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+  --date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
   --output-root data/modeling
 ```
 
@@ -160,6 +171,7 @@ python -m uv run python -m chesslens.modeling.build_dataset `
   --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
   --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
   --warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+  --date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
   --output-root data/modeling
 ```
 
@@ -225,7 +237,20 @@ python -m uv run python -m chesslens.modeling.generate_warehouse_provenance `
   --output reports/local/phase2_1b_2017_tier2_warehouse_provenance.json
 ```
 
-5. Dry-run modeling command:
+5. Build/resume UTCDate-first enrichment sidecar from existing 2017 shards:
+
+```powershell
+uv run python -m chesslens.ingestion.date_enrichment `
+  --shard-root data/raw_shards `
+  --source-month 2017-01 `
+  --output-root data/processed/date_enrichment `
+  --resume
+```
+
+Set `CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH` to the generated
+`_date_enrichment_manifest.json` before running modeling.
+
+6. Dry-run modeling command:
 
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
@@ -233,11 +258,12 @@ python -m uv run python -m chesslens.modeling.build_dataset `
   --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
   --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
   --warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+  --date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
   --output-root data/modeling `
   --dry-run
 ```
 
-6. First actual bounded modeling build (can be long-running):
+7. First actual bounded modeling build (can be long-running):
 
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
@@ -245,12 +271,13 @@ python -m uv run python -m chesslens.modeling.build_dataset `
   --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
   --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
   --warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+  --date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
   --output-root data/modeling `
   --max-games 5000 `
   --max-examples 500000
 ```
 
-7. Validate-only after the first real build exists:
+8. Validate-only after the first real build exists:
 
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
@@ -258,13 +285,14 @@ python -m uv run python -m chesslens.modeling.build_dataset `
   --collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
   --duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
   --warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+  --date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
   --output-root data/modeling `
   --max-games 5000 `
   --max-examples 500000 `
   --validate-only
 ```
 
-8. Run the same bounded build command again and confirm `reused_existing=true`.
+9. Run the same bounded build command again and confirm `reused_existing=true`.
 
 ## 9. Reading the Manifest Quickly
 

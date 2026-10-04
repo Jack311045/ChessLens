@@ -20,6 +20,7 @@ def test_build_dataset_main_uses_env_path_fallbacks(
     expected_collection_root = data_root / "processed" / "collections" / collection_id
     duckdb_path = tmp_path / "warehouse.duckdb"
     provenance_path = tmp_path / "warehouse_provenance.json"
+    enrichment_manifest = tmp_path / "date_enrichment_manifest.json"
 
     observed: dict[str, object] = {}
 
@@ -31,6 +32,9 @@ def test_build_dataset_main_uses_env_path_fallbacks(
     monkeypatch.setenv("CHESSLENS_COLLECTION_ID", collection_id)
     monkeypatch.setenv("CHESSLENS_DUCKDB_PATH", str(duckdb_path))
     monkeypatch.setenv("CHESSLENS_WAREHOUSE_PROVENANCE_PATH", str(provenance_path))
+    monkeypatch.setenv(
+        "CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH", str(enrichment_manifest)
+    )
     monkeypatch.setattr(
         build_dataset_module,
         "run_modeling_dataset_build",
@@ -54,6 +58,10 @@ def test_build_dataset_main_uses_env_path_fallbacks(
     assert observed["collection_root_override"] == expected_collection_root.as_posix()
     assert observed["duckdb_path_override"] == duckdb_path.as_posix()
     assert observed["warehouse_provenance_path_override"] == provenance_path.as_posix()
+    assert (
+        observed["date_enrichment_manifest_path_override"]
+        == enrichment_manifest.as_posix()
+    )
 
 
 def test_run_baselines_main_uses_modeling_manifest_env_fallback(

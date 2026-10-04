@@ -8,6 +8,7 @@ import pytest
 from chesslens.runtime_paths import (
     RuntimePathResolutionError,
     resolve_collection_root_override_or_env,
+    resolve_date_enrichment_manifest_override_or_env,
     resolve_duckdb_path_override_or_env,
     resolve_external_data_root_env,
     resolve_modeling_manifest_override_or_env,
@@ -18,6 +19,7 @@ RUNTIME_PATH_ENV_VARS: tuple[str, ...] = (
     "CHESSLENS_COLLECTION_ID",
     "CHESSLENS_COLLECTION_ROOT",
     "CHESSLENS_DATA_ROOT",
+    "CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH",
     "CHESSLENS_DUCKDB_PATH",
     "CHESSLENS_MODELING_MANIFEST_PATH",
     "CHESSLENS_MODELING_MANIFEST",
@@ -147,6 +149,23 @@ def test_modeling_and_provenance_path_env_resolution(
 
     assert resolve_modeling_manifest_override_or_env(None) == modeling_manifest
     assert resolve_warehouse_provenance_path_override_or_env(None) == warehouse_provenance
+
+
+def test_date_enrichment_manifest_path_env_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _clear_runtime_path_env(monkeypatch)
+    enrichment_manifest = tmp_path / "date_enrichment_manifest.json"
+
+    monkeypatch.setenv(
+        "CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH", str(enrichment_manifest)
+    )
+
+    assert (
+        resolve_date_enrichment_manifest_override_or_env(None)
+        == enrichment_manifest
+    )
 
 
 def test_external_data_root_ignores_blank_env(monkeypatch: pytest.MonkeyPatch) -> None:

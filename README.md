@@ -218,6 +218,7 @@ $env:CHESSLENS_DATA_ROOT = "<external-data-root>"
 $env:CHESSLENS_COLLECTION_ID = "<collection-id>"
 $env:CHESSLENS_DUCKDB_PATH = "<external-data-root>/tmp/chesslens_warehouse.duckdb"
 $env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH = "reports/local/<warehouse-provenance>.json"
+$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH = "<date-enrichment-manifest-path>"
 $env:CHESSLENS_MODELING_MANIFEST_PATH = "data/modeling/datasets/<modeling_dataset_id>/_manifest.json"
 ```
 
@@ -232,6 +233,7 @@ Resolved paths now follow these conventions:
 - `CHESSLENS_DUCKDB_PATH` (or compatibility alias `CHESSLENS_TIER2_DB_PATH`) supplies
 	warehouse DB location.
 - `CHESSLENS_WAREHOUSE_PROVENANCE_PATH` is used by Phase 2.1 modeling.
+- `CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH` is used by Phase 2.1 temporal split date resolution.
 - `CHESSLENS_MODELING_MANIFEST_PATH` is used by Phase 2.2 baselines.
 
 Safe read-only checks:
@@ -328,12 +330,28 @@ python -m uv run python scripts/benchmark_parallel_shard_ingestion.py `
 
 Build a leakage-aware modeling dataset from warehouse relations:
 
+1. Build or resume UTCDate-first date enrichment sidecar from existing shards
+	(header-only; no moves re-ingestion, no bronze rewrite):
+
+```powershell
+uv run python -m chesslens.ingestion.date_enrichment `
+	--shard-root data/raw_shards `
+	--source-month 2017-01 `
+	--output-root data/processed/date_enrichment `
+	--resume
+```
+
+Bounded sessions are supported with `--max-new-shards <N>`.
+
+2. Run modeling builder with provenance + date enrichment inputs:
+
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/fixture.yaml `
 	--collection-root "$env:CHESSLENS_COLLECTION_ROOT" `
 	--duckdb-path "$env:CHESSLENS_DUCKDB_PATH" `
 	--warehouse-provenance-path "$env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH" `
+	--date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
 	--output-root data/modeling
 ```
 
@@ -373,6 +391,7 @@ Real 2017 Tier-2 sample config uses:
 
 - `configs/modeling/2017_01_sample.yaml`
 - generated provenance output path: `reports/local/phase2_1b_2017_tier2_warehouse_provenance.json`
+- date enrichment is required (`input.require_date_enrichment: true`)
 
 Do not treat any template as acceptance evidence. Generate provenance from your
 actual DuckDB snapshot first.
@@ -528,6 +547,17 @@ python -m uv run python -m chesslens.modeling.generate_warehouse_provenance `
 $env:CHESSLENS_COLLECTION_ROOT = "data/processed/collections/56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb"
 $env:CHESSLENS_DUCKDB_PATH = "REPLACE_WITH_FULL_DUCKDB_PATH"
 $env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH = "reports/local/phase2_1b_2017_tier2_warehouse_provenance.json"
+$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH = "REPLACE_WITH_DATE_ENRICHMENT_MANIFEST_PATH"
+```
+
+6a. Build/resume date enrichment sidecar before temporal-split modeling:
+
+```powershell
+uv run python -m chesslens.ingestion.date_enrichment `
+	--shard-root data/raw_shards `
+	--source-month 2017-01 `
+	--output-root data/processed/date_enrichment `
+	--resume
 ```
 
 7. Dry-run modeling (plan/check only):
@@ -535,6 +565,7 @@ $env:CHESSLENS_WAREHOUSE_PROVENANCE_PATH = "reports/local/phase2_1b_2017_tier2_w
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
+	--date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
 	--output-root data/modeling `
 	--dry-run
 ```
@@ -544,6 +575,7 @@ python -m uv run python -m chesslens.modeling.build_dataset `
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
+	--date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
 	--output-root data/modeling `
 	--max-games 5000 `
 	--max-examples 500000
@@ -554,6 +586,7 @@ python -m uv run python -m chesslens.modeling.build_dataset `
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
+	--date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
 	--output-root data/modeling `
 	--max-games 5000 `
 	--max-examples 500000 `
@@ -565,6 +598,7 @@ python -m uv run python -m chesslens.modeling.build_dataset `
 ```powershell
 python -m uv run python -m chesslens.modeling.build_dataset `
 	--config configs/modeling/2017_01_sample.yaml `
+	--date-enrichment-manifest-path "$env:CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH" `
 	--output-root data/modeling `
 	--max-games 5000 `
 	--max-examples 500000

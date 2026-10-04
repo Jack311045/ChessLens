@@ -20,6 +20,7 @@ from chesslens.modeling.run_baselines import (
     _frequency_score,
     run_baselines,
 )
+from chesslens.modeling.sampling import select_by_hash_mod
 
 
 def _parse_single_json_document(text: str) -> dict[str, Any]:
@@ -295,6 +296,14 @@ def _write_modeling_fixture(
         "splits": {
             "definition_version": "temporal_game_split_v1",
         },
+        "player_holdout": {
+            "rule_version": "sha256_mod_v1",
+            "seed": "fixture-holdout-v1",
+            "hash_modulus": 10000,
+            "hash_threshold": 0,
+            "requested_rate_percent": 0.0,
+            "missing_player_hash_policy": "exclude_from_player_disjoint_training",
+        },
         "datasets": {
             "policy_examples": {
                 "train": {
@@ -320,6 +329,234 @@ def _write_modeling_fixture(
                 "test": {
                     "relative_files": ["game_assignments/test.parquet"],
                 },
+            },
+        },
+    }
+
+    manifest_path = dataset_root / "_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (dataset_root / "_SUCCESS").write_text("ok\n", encoding="utf-8")
+    return manifest_path
+
+
+def _find_holdout_and_non_holdout_players(
+    *,
+    seed: str,
+    hash_modulus: int,
+    hash_threshold: int,
+) -> tuple[str, str, str]:
+    holdout_player: str | None = None
+    non_holdout_players: list[str] = []
+
+    for idx in range(10000):
+        player_hash = f"holdout_case_player_{idx}"
+        selected, _ = select_by_hash_mod(
+            namespace="player_holdout",
+            token=player_hash,
+            seed=seed,
+            hash_modulus=hash_modulus,
+            hash_threshold=hash_threshold,
+        )
+        if selected:
+            if holdout_player is None:
+                holdout_player = player_hash
+        elif len(non_holdout_players) < 2:
+            non_holdout_players.append(player_hash)
+
+        if holdout_player is not None and len(non_holdout_players) == 2:
+            break
+
+    if holdout_player is None or len(non_holdout_players) < 2:
+        raise AssertionError("Unable to find deterministic holdout/non-holdout players")
+
+    return holdout_player, non_holdout_players[0], non_holdout_players[1]
+
+
+def _write_modeling_fixture_holdout_overlap_case(
+    tmp_path: Path,
+    *,
+    leak_true_holdout_in_eligible_training: bool,
+) -> Path:
+    dataset_name = (
+        "holdout_overlap_leak" if leak_true_holdout_in_eligible_training else "holdout_overlap_ok"
+    )
+    dataset_root = tmp_path / dataset_name
+
+    holdout_seed = "holdout-overlap-seed"
+    holdout_hash_modulus = 10
+    holdout_hash_threshold = 3
+    holdout_player, normal_player_b, normal_player_c = _find_holdout_and_non_holdout_players(
+        seed=holdout_seed,
+        hash_modulus=holdout_hash_modulus,
+        hash_threshold=holdout_hash_threshold,
+    )
+
+    eligible_train_game_id = (
+        "train_game_leak_holdout"
+        if leak_true_holdout_in_eligible_training
+        else "train_game_normal_pair"
+    )
+
+    train_rows = [
+        _policy_row(
+            split="train",
+            game_id=eligible_train_game_id,
+            source_month="2013-01",
+            fen=_fen_after(["e2e4", "e7e5"]),
+            target_move_uci="g1f3",
+            value_target_wdl="win",
+            mover_rating=1500,
+            opponent_rating=1450,
+            time_control_raw="300+0",
+            eco="C20",
+            opening="King Pawn Game",
+            player_disjoint_training_eligible=True,
+            is_player_holdout_game=False,
+        ),
+        _policy_row(
+            split="train",
+            game_id="train_game_holdout_reference",
+            source_month="2013-01",
+            fen=_fen_after(["d2d4", "d7d5"]),
+            target_move_uci="c1f4",
+            value_target_wdl="draw",
+            mover_rating=1600,
+            opponent_rating=1625,
+            time_control_raw="180+2",
+            eco="D00",
+            opening="Queen Pawn Game",
+            player_disjoint_training_eligible=False,
+            is_player_holdout_game=True,
+        ),
+    ]
+
+    validation_rows = [
+        _policy_row(
+            split="validation",
+            game_id="validation_game_a",
+            source_month="2013-01",
+            fen=_fen_after(["g1f3", "d7d5", "g2g3"]),
+            target_move_uci="c8g4",
+            value_target_wdl="loss",
+            mover_rating=1800,
+            opponent_rating=1775,
+            time_control_raw="60+0",
+            eco="A04",
+            opening="Reti Opening",
+            player_disjoint_training_eligible=False,
+            is_player_holdout_game=True,
+        )
+    ]
+
+    test_rows = [
+        _policy_row(
+            split="test",
+            game_id="test_game_a",
+            source_month="2013-01",
+            fen=_fen_after(["e2e4", "c7c5", "g1f3"]),
+            target_move_uci="d7d6",
+            value_target_wdl="draw",
+            mover_rating=1900,
+            opponent_rating=1850,
+            time_control_raw="900+10",
+            eco="B20",
+            opening="Sicilian Defense",
+            player_disjoint_training_eligible=False,
+            is_player_holdout_game=True,
+        )
+    ]
+
+    novel_rows = [{"position_id": test_rows[0]["position_id"]}]
+
+    _write_parquet(dataset_root / "policy_examples" / "train.parquet", train_rows)
+    _write_parquet(dataset_root / "policy_examples" / "validation.parquet", validation_rows)
+    _write_parquet(dataset_root / "policy_examples" / "test.parquet", test_rows)
+    _write_parquet(
+        dataset_root / "policy_examples" / "novel_position_test.parquet",
+        novel_rows,
+    )
+
+    if leak_true_holdout_in_eligible_training:
+        eligible_white = holdout_player
+        eligible_black = normal_player_c
+    else:
+        eligible_white = normal_player_b
+        eligible_black = normal_player_c
+
+    train_games: list[dict[str, object]] = [
+        {
+            "game_id": eligible_train_game_id,
+            "temporal_split": "train",
+            "white_player_hash": eligible_white,
+            "black_player_hash": eligible_black,
+        },
+        {
+            "game_id": "train_game_holdout_reference",
+            "temporal_split": "train",
+            "white_player_hash": holdout_player,
+            "black_player_hash": normal_player_b,
+        },
+    ]
+    validation_games: list[dict[str, object]] = [
+        {
+            "game_id": "validation_game_a",
+            "temporal_split": "validation",
+            "white_player_hash": holdout_player,
+            "black_player_hash": normal_player_c,
+        }
+    ]
+    test_games: list[dict[str, object]] = [
+        {
+            "game_id": "test_game_a",
+            "temporal_split": "test",
+            "white_player_hash": normal_player_c,
+            "black_player_hash": normal_player_b,
+        }
+    ]
+
+    _write_parquet(dataset_root / "game_assignments" / "train.parquet", train_games)
+    _write_parquet(
+        dataset_root / "game_assignments" / "validation.parquet",
+        validation_games,
+    )
+    _write_parquet(dataset_root / "game_assignments" / "test.parquet", test_games)
+
+    manifest = {
+        "status": "complete",
+        "modeling_dataset_id": "baseline-holdout-overlap-case",
+        "upstream": {
+            "collection_id": "baseline-fixture-collection",
+        },
+        "versions": {
+            "feature_schema_version": "policy_value_features_v1",
+        },
+        "splits": {
+            "definition_version": "temporal_game_split_v1",
+        },
+        "player_holdout": {
+            "rule_version": "sha256_mod_v1",
+            "seed": holdout_seed,
+            "hash_modulus": holdout_hash_modulus,
+            "hash_threshold": holdout_hash_threshold,
+            "requested_rate_percent": 30.0,
+            "missing_player_hash_policy": "exclude_from_player_disjoint_training",
+        },
+        "datasets": {
+            "policy_examples": {
+                "train": {"relative_files": ["policy_examples/train.parquet"]},
+                "validation": {"relative_files": ["policy_examples/validation.parquet"]},
+                "test": {"relative_files": ["policy_examples/test.parquet"]},
+                "novel_position_test": {
+                    "relative_files": ["policy_examples/novel_position_test.parquet"]
+                },
+            },
+            "game_assignments": {
+                "train": {"relative_files": ["game_assignments/train.parquet"]},
+                "validation": {"relative_files": ["game_assignments/validation.parquet"]},
+                "test": {"relative_files": ["game_assignments/test.parquet"]},
             },
         },
     }
@@ -577,6 +814,53 @@ def test_player_disjoint_mode_excludes_ineligible_example_for_all_models(tmp_pat
         encoding="utf-8"
     )
     assert first_lightgbm_model == second_lightgbm_model
+
+
+def test_player_disjoint_allows_non_holdout_player_who_played_holdout_opponent(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_modeling_fixture_holdout_overlap_case(
+        tmp_path,
+        leak_true_holdout_in_eligible_training=False,
+    )
+    config_path = tmp_path / "baseline_player_disjoint_overlap_ok.yaml"
+    _write_baseline_config_custom(
+        config_path,
+        manifest_path=manifest_path,
+        output_root=tmp_path / "out_overlap_ok",
+        training_population_mode="player_disjoint",
+        legality_scope="selected",
+    )
+
+    result = run_baselines(config_path=config_path, validate_only=True)
+    assert result.validate_only is True
+    assert result.summary is not None
+    assert result.summary["training_population"]["mode"] == "player_disjoint"
+    assert result.summary["training_population"]["eligible_train_row_count"] == 1
+    assert result.summary["training_population"]["training_row_count_used"] == 1
+
+
+def test_player_disjoint_rejects_true_holdout_player_in_eligible_training(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_modeling_fixture_holdout_overlap_case(
+        tmp_path,
+        leak_true_holdout_in_eligible_training=True,
+    )
+    config_path = tmp_path / "baseline_player_disjoint_overlap_leak.yaml"
+    _write_baseline_config_custom(
+        config_path,
+        manifest_path=manifest_path,
+        output_root=tmp_path / "out_overlap_leak",
+        training_population_mode="player_disjoint",
+        legality_scope="selected",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Held-out player overlap detected in player_disjoint training population",
+    ):
+        run_baselines(config_path=config_path, validate_only=True)
 
 
 def test_player_holdout_subgroup_interpretation_labels(tmp_path: Path) -> None:
