@@ -41,6 +41,8 @@ def _make_config(
             collection_root=Path("data/processed/collections/test"),
             duckdb_path=Path("data/tmp/test.duckdb"),
             warehouse_provenance_path=Path("reports/local/test_warehouse_provenance.json"),
+            date_enrichment_manifest_path=None,
+            require_date_enrichment=False,
             expected_collection_id=None,
             move_context_relation="main.int_move_context",
             games_relation="main.stg_games",
@@ -100,7 +102,9 @@ def _append_one_assignment(
         candidate={
             "game_id": game_id,
             "source_month": "2017-01",
-            "played_date": "2017.01.05",
+            "played_date_raw": "2017.01.05",
+            "played_date_for_split": "2017-01-05",
+            "played_date_source": "date",
             "result": "1-0",
             "white_player_hash": white_player_hash,
             "black_player_hash": black_player_hash,
@@ -116,6 +120,7 @@ def _append_one_assignment(
         out_buffer=rows,
         game_rejections=Counter(),
         sampling_stats=Counter(),
+        date_source_counts=Counter(),
     )
     assert len(rows) == 1
     return rows[0]
