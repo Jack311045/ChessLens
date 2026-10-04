@@ -18,6 +18,7 @@ from typing import Any
 
 import duckdb
 
+from chesslens.ingestion.date_resolution import CANONICAL_PLAYED_DATE_RESOLVER_VERSION
 from chesslens.ingestion.rss import PeakRssSampler
 from chesslens.ingestion.shard_manifest import atomic_write_json
 from chesslens.modeling.config import ModelingConfig, apply_cli_overrides, load_modeling_config
@@ -59,6 +60,7 @@ from chesslens.modeling.writer import ModelingParquetWriter, PartitionWriteStats
 from chesslens.runtime_paths import (
     RuntimePathResolutionError,
     resolve_collection_root_override_or_env,
+    resolve_date_enrichment_manifest_override_or_env,
     resolve_duckdb_path_override_or_env,
     resolve_warehouse_provenance_path_override_or_env,
 )
@@ -81,6 +83,17 @@ class ModelingBuildResult:
     peak_rss_bytes: int | None
     dry_run: bool
     validate_only: bool
+
+
+@dataclass(frozen=True)
+class DateEnrichmentInput:
+    manifest_path: Path
+    date_enrichment_id: str
+    manifest_sha256: str
+    source_month: str
+    parent_archive_sha256: str
+    resolver_version: str
+    parquet_files: list[str]
 
 
 def _utc_now_iso() -> str:
@@ -164,6 +177,13 @@ def _as_optional_float(value: Any, *, field_name: str) -> float | None:
         return float(value)
     except (TypeError, ValueError) as exc:
         raise RuntimeError(f"Manifest field {field_name} must be numeric") from exc
+
+
+def _as_required_str(value: Any, *, field_name: str) -> str:
+    text = str(value).strip()
+    if not text:
+        raise RuntimeError(f"Manifest field {field_name} must be non-empty")
+    return text
 
 
 def _int_mapping(value: Any, *, field_name: str) -> dict[str, int]:
@@ -284,10 +304,158 @@ def _load_collection_identity(config: ModelingConfig) -> dict[str, Any]:
     }
 
 
+def _load_date_enrichment_input(
+    *,
+    config: ModelingConfig,
+    upstream: dict[str, Any],
+) -> DateEnrichmentInput | None:
+    manifest_path = config.input.date_enrichment_manifest_path
+    if manifest_path is None:
+        if config.input.require_date_enrichment:
+            raise RuntimeError(
+                "Date enrichment is required but no manifest path is configured. "
+                "Set input.date_enrichment_manifest_path, --date-enrichment-manifest-path, "
+                "or CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH."
+            )
+        return None
+
+    manifest = read_json_object(manifest_path)
+    status = str(manifest.get("status", "")).strip()
+    if status != "complete":
+        raise RuntimeError(
+            "Date enrichment manifest must be complete before modeling: "
+            f"{manifest_path.as_posix()}"
+        )
+
+    date_enrichment_id = _as_required_str(
+        manifest.get("date_enrichment_id"),
+        field_name="date_enrichment_id",
+    )
+    source_month = _as_required_str(manifest.get("source_month"), field_name="source_month")
+    parent_archive_sha256 = _as_required_str(
+        manifest.get("parent_archive_sha256"),
+        field_name="parent_archive_sha256",
+    )
+    resolver_version = _as_required_str(
+        manifest.get("resolver_version"),
+        field_name="resolver_version",
+    )
+
+    if resolver_version != CANONICAL_PLAYED_DATE_RESOLVER_VERSION:
+        raise RuntimeError(
+            "Unsupported date enrichment resolver version: "
+            f"{resolver_version!r}. Supported value is "
+            f"{CANONICAL_PLAYED_DATE_RESOLVER_VERSION!r}."
+        )
+
+    upstream_manifest = _as_mapping(upstream.get("manifest"), field_name="collection_manifest")
+    upstream_source_month = str(upstream_manifest.get("source_month", "")).strip()
+    if upstream_source_month and upstream_source_month != source_month:
+        raise RuntimeError(
+            "Date enrichment source_month does not match collection manifest: "
+            f"{source_month!r} != {upstream_source_month!r}"
+        )
+
+    upstream_parent_sha = str(upstream_manifest.get("parent_archive_sha256", "")).strip()
+    if upstream_parent_sha and upstream_parent_sha != parent_archive_sha256:
+        raise RuntimeError(
+            "Date enrichment parent_archive_sha256 does not match collection manifest: "
+            f"{parent_archive_sha256!r} != {upstream_parent_sha!r}"
+        )
+
+    shards_raw = manifest.get("shards", [])
+    if not isinstance(shards_raw, list):
+        raise RuntimeError("Date enrichment manifest field shards must be a list")
+    if not shards_raw:
+        raise RuntimeError("Date enrichment manifest has no shard artifacts")
+
+    parquet_files: list[str] = []
+    seen_relpaths: set[str] = set()
+    for index, shard_payload in enumerate(shards_raw):
+        shard = _as_mapping(shard_payload, field_name=f"shards[{index}]")
+        relpath = _as_required_str(shard.get("output_relpath"), field_name="output_relpath")
+        rel = Path(relpath)
+        if rel.is_absolute() or ".." in rel.parts:
+            raise RuntimeError(
+                "Date enrichment manifest contains unsafe output_relpath: "
+                f"{relpath!r}"
+            )
+        if relpath in seen_relpaths:
+            raise RuntimeError(
+                "Date enrichment manifest has duplicate output_relpath entries: "
+                f"{relpath!r}"
+            )
+        seen_relpaths.add(relpath)
+
+        full_path = (manifest_path.parent / rel).resolve()
+        if not full_path.exists():
+            raise RuntimeError(
+                "Date enrichment artifact file does not exist: "
+                f"{full_path.as_posix()}"
+            )
+        parquet_files.append(full_path.as_posix())
+
+    manifest_sha = sha256_text(canonical_json(manifest))
+    return DateEnrichmentInput(
+        manifest_path=manifest_path,
+        date_enrichment_id=date_enrichment_id,
+        manifest_sha256=manifest_sha,
+        source_month=source_month,
+        parent_archive_sha256=parent_archive_sha256,
+        resolver_version=resolver_version,
+        parquet_files=parquet_files,
+    )
+
+
+def _validate_date_enrichment_against_games_relation(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    config: ModelingConfig,
+    date_enrichment: DateEnrichmentInput,
+) -> dict[str, int]:
+    enrichment_sql = f"SELECT * FROM read_parquet({_sql_file_list(date_enrichment.parquet_files)})"
+
+    duplicate_game_ids_row = connection.execute(
+        "SELECT COUNT(*) FROM ("
+        f"  SELECT game_id FROM ({enrichment_sql}) GROUP BY game_id HAVING COUNT(*) > 1"
+        ")"
+    ).fetchone()
+    duplicate_game_ids = int(duplicate_game_ids_row[0]) if duplicate_game_ids_row else 0
+    if duplicate_game_ids > 0:
+        raise RuntimeError(
+            "Date enrichment relation has duplicate game_id rows; expected one row per game"
+        )
+
+    coverage_row = connection.execute(
+        "SELECT "
+        "  SUM(CASE WHEN e.game_id IS NULL THEN 1 ELSE 0 END) AS missing_games, "
+        "  SUM(CASE WHEN e.canonical_date_source = 'missing_or_invalid' THEN 1 ELSE 0 END) "
+        "    AS missing_or_invalid_games "
+        f"FROM {config.input.games_relation} g "
+        f"LEFT JOIN ({enrichment_sql}) e ON g.game_id = e.game_id"
+    ).fetchone()
+    if coverage_row is None:
+        raise RuntimeError("Unable to validate date enrichment coverage against games relation")
+
+    missing_games = int(coverage_row[0] or 0)
+    missing_or_invalid_games = int(coverage_row[1] or 0)
+    if missing_games > 0:
+        raise RuntimeError(
+            "Date enrichment does not fully cover the modeling games relation. "
+            f"Missing {missing_games} game_id values from enrichment sidecar."
+        )
+
+    return {
+        "missing_games": missing_games,
+        "missing_or_invalid_games": missing_or_invalid_games,
+    }
+
+
 def _dataset_identity_payload(
     config: ModelingConfig,
     upstream: dict[str, Any],
     warehouse_provenance: WarehouseProvenance,
+    date_enrichment: DateEnrichmentInput | None,
 ) -> dict[str, Any]:
     return {
         "upstream": {
@@ -343,6 +511,16 @@ def _dataset_identity_payload(
             "parquet_row_group_size": config.output.parquet_row_group_size,
             "move_context_relation": config.input.move_context_relation,
             "games_relation": config.input.games_relation,
+            "date_enrichment_required": config.input.require_date_enrichment,
+            "date_enrichment_id": (
+                None if date_enrichment is None else date_enrichment.date_enrichment_id
+            ),
+            "date_enrichment_manifest_sha256": (
+                None if date_enrichment is None else date_enrichment.manifest_sha256
+            ),
+            "date_enrichment_resolver_version": (
+                None if date_enrichment is None else date_enrichment.resolver_version
+            ),
             "strict": config.behavior.strict,
         },
     }
@@ -352,8 +530,14 @@ def _derive_modeling_dataset_id(
     config: ModelingConfig,
     upstream: dict[str, Any],
     warehouse_provenance: WarehouseProvenance,
+    date_enrichment: DateEnrichmentInput | None,
 ) -> str:
-    payload = _dataset_identity_payload(config, upstream, warehouse_provenance)
+    payload = _dataset_identity_payload(
+        config,
+        upstream,
+        warehouse_provenance,
+        date_enrichment,
+    )
     return sha256_text(canonical_json(payload))
 
 
@@ -621,15 +805,39 @@ def _build_game_assignments(
     connection: duckdb.DuckDBPyConnection,
     config: ModelingConfig,
     writer: ModelingParquetWriter,
-) -> tuple[dict[str, Any], list[str], Counter[str], Counter[str]]:
-    query = (
-        "SELECT game_id, source_month, played_date, result, white_player_hash, "
-        "black_player_hash, white_rating, black_rating, time_control_raw, eco, opening, ply_count "
-        f"FROM {config.input.games_relation} ORDER BY game_id"
-    )
+    date_enrichment: DateEnrichmentInput | None,
+) -> tuple[dict[str, Any], list[str], Counter[str], Counter[str], Counter[str]]:
+    query: str
+    if date_enrichment is None:
+        query = (
+            "SELECT "
+            "  g.game_id, g.source_month, g.played_date, g.played_date, "
+            "  'legacy_played_date' AS played_date_source, "
+            "  g.result, g.white_player_hash, g.black_player_hash, "
+            "  g.white_rating, g.black_rating, g.time_control_raw, g.eco, g.opening, g.ply_count "
+            f"FROM {config.input.games_relation} g "
+            "ORDER BY g.game_id"
+        )
+    else:
+        enrichment_sql = (
+            "SELECT * FROM read_parquet("
+            f"{_sql_file_list(date_enrichment.parquet_files)}"
+            ")"
+        )
+        query = (
+            "SELECT "
+            "  g.game_id, g.source_month, g.played_date, e.canonical_played_date_iso, "
+            "  COALESCE(e.canonical_date_source, 'missing_or_invalid') AS played_date_source, "
+            "  g.result, g.white_player_hash, g.black_player_hash, "
+            "  g.white_rating, g.black_rating, g.time_control_raw, g.eco, g.opening, g.ply_count "
+            f"FROM {config.input.games_relation} g "
+            f"LEFT JOIN ({enrichment_sql}) e ON g.game_id = e.game_id "
+            "ORDER BY g.game_id"
+        )
 
     game_rejections: Counter[str] = Counter()
     sampling_stats: Counter[str] = Counter()
+    date_source_counts: Counter[str] = Counter()
     assignments_buffer: list[dict[str, Any]] = []
 
     max_games = config.sampling.max_games
@@ -654,16 +862,18 @@ def _build_game_assignments(
             candidate = {
                 "game_id": game_id,
                 "source_month": row[1],
-                "played_date": row[2],
-                "result": row[3],
-                "white_player_hash": row[4],
-                "black_player_hash": row[5],
-                "white_rating": row[6],
-                "black_rating": row[7],
-                "time_control_raw": row[8],
-                "eco": row[9],
-                "opening": row[10],
-                "ply_count": row[11],
+                "played_date_raw": row[2],
+                "played_date_for_split": row[3],
+                "played_date_source": row[4],
+                "result": row[5],
+                "white_player_hash": row[6],
+                "black_player_hash": row[7],
+                "white_rating": row[8],
+                "black_rating": row[9],
+                "time_control_raw": row[10],
+                "eco": row[11],
+                "opening": row[12],
+                "ply_count": row[13],
                 "sample_score_u64": sample_score,
             }
             _append_assignment_candidate(
@@ -672,6 +882,7 @@ def _build_game_assignments(
                 out_buffer=assignments_buffer,
                 game_rejections=game_rejections,
                 sampling_stats=sampling_stats,
+                date_source_counts=date_source_counts,
             )
             if len(assignments_buffer) >= config.output.batch_rows:
                 writer.write_rows(
@@ -703,16 +914,18 @@ def _build_game_assignments(
                 candidate = {
                     "game_id": game_id,
                     "source_month": row[1],
-                    "played_date": row[2],
-                    "result": row[3],
-                    "white_player_hash": row[4],
-                    "black_player_hash": row[5],
-                    "white_rating": row[6],
-                    "black_rating": row[7],
-                    "time_control_raw": row[8],
-                    "eco": row[9],
-                    "opening": row[10],
-                    "ply_count": row[11],
+                    "played_date_raw": row[2],
+                    "played_date_for_split": row[3],
+                    "played_date_source": row[4],
+                    "result": row[5],
+                    "white_player_hash": row[6],
+                    "black_player_hash": row[7],
+                    "white_rating": row[8],
+                    "black_rating": row[9],
+                    "time_control_raw": row[10],
+                    "eco": row[11],
+                    "opening": row[12],
+                    "ply_count": row[13],
                     "sample_score_u64": sample_score,
                 }
 
@@ -738,6 +951,7 @@ def _build_game_assignments(
                 out_buffer=assignments_buffer,
                 game_rejections=game_rejections,
                 sampling_stats=sampling_stats,
+                date_source_counts=date_source_counts,
             )
             if len(assignments_buffer) >= config.output.batch_rows:
                 writer.write_rows(
@@ -773,7 +987,13 @@ def _build_game_assignments(
     ]
 
     assignment_counts = _counts_by_split_from_assignment_stats(writer_stats)
-    return assignment_counts, assignment_files_for_sql, game_rejections, sampling_stats
+    return (
+        assignment_counts,
+        assignment_files_for_sql,
+        game_rejections,
+        sampling_stats,
+        date_source_counts,
+    )
 
 
 def _counts_by_split_from_assignment_stats(
@@ -792,8 +1012,12 @@ def _append_assignment_candidate(
     out_buffer: list[dict[str, Any]],
     game_rejections: Counter[str],
     sampling_stats: Counter[str],
+    date_source_counts: Counter[str],
 ) -> None:
-    parsed = parse_played_date(_as_optional_str(candidate["played_date"]))
+    parsed = parse_played_date(_as_optional_str(candidate["played_date_for_split"]))
+    date_source = _as_optional_str(candidate.get("played_date_source")) or "missing_or_invalid"
+    date_source_counts[date_source] += 1
+
     split, split_reason = assign_temporal_split(
         parsed_date=parsed.parsed_date,
         date_status=parsed.status,
@@ -830,8 +1054,9 @@ def _append_assignment_candidate(
         {
             "game_id": str(candidate["game_id"]),
             "source_month": _as_optional_str(candidate["source_month"]),
-            "played_date_raw": parsed.played_date_raw,
+            "played_date_raw": _as_optional_str(candidate["played_date_raw"]),
             "played_date_iso": parsed.played_date_iso,
+            "played_date_source": date_source,
             "temporal_split": split,
             "temporal_split_reason": split_reason,
             "sample_score_u64": int(candidate["sample_score_u64"]),
@@ -876,7 +1101,7 @@ def _build_policy_examples(
         "  m.white_rating, m.black_rating, m.time_control_raw, m.eco, m.opening, "
         "  m.result, m.termination, "
         "  a.temporal_split, a.player_disjoint_training_eligible, a.is_player_holdout_game, "
-        "  a.played_date_iso, a.white_player_hash, a.black_player_hash "
+        "  a.played_date_iso, a.played_date_source, a.white_player_hash, a.black_player_hash "
         f"FROM {config.input.move_context_relation} m "
         f"INNER JOIN ({assignments_sql}) a ON m.game_id = a.game_id "
         "ORDER BY m.game_id, m.ply"
@@ -920,6 +1145,7 @@ def _build_policy_examples(
                 "temporal_split": str(row[15]),
                 "source_month": _as_optional_str(row[2]),
                 "played_date_iso": _as_optional_str(row[18]),
+                "played_date_source": str(row[19]),
                 "position_id": str(row[3]),
                 "pre_move_fen": str(row[4]),
                 "normalized_pre_move_fen": str(row[5]),
@@ -928,8 +1154,8 @@ def _build_policy_examples(
                 "time_control_category": time_control_category(_as_optional_str(row[10])),
                 "eco": _as_optional_str(row[11]),
                 "opening": _as_optional_str(row[12]),
-                "white_player_hash": _as_optional_str(row[19]),
-                "black_player_hash": _as_optional_str(row[20]),
+                "white_player_hash": _as_optional_str(row[20]),
+                "black_player_hash": _as_optional_str(row[21]),
                 "mover_rating": mover_rating,
                 "opponent_rating": opponent_rating,
                 "rating_difference": rating_diff,
@@ -1007,6 +1233,7 @@ def _write_novel_position_slice(
         "temporal_split",
         "source_month",
         "played_date_iso",
+        "played_date_source",
         "position_id",
         "pre_move_fen",
         "normalized_pre_move_fen",
@@ -1087,6 +1314,7 @@ def _validate_split_and_holdout_constraints(
     connection: duckdb.DuckDBPyConnection,
     assignments_sql: str,
     primary_policy_sql: str,
+    config: ModelingConfig,
 ) -> None:
     duplicate_games = connection.execute(
         "SELECT COUNT(*) FROM ("
@@ -1107,25 +1335,105 @@ def _validate_split_and_holdout_constraints(
             "Validation failed: moves from a game appear in multiple temporal splits"
         )
 
-    heldout_leak = connection.execute(
-        "WITH assignments AS ("
-        f"  SELECT * FROM ({assignments_sql})"
-        "), heldout_players AS ("
-        "  SELECT DISTINCT white_player_hash AS player_hash FROM assignments "
-        "  WHERE is_player_holdout_game AND white_player_hash IS NOT NULL "
-        "  UNION "
-        "  SELECT DISTINCT black_player_hash AS player_hash FROM assignments "
-        "  WHERE is_player_holdout_game AND black_player_hash IS NOT NULL"
-        ") "
-        "SELECT COUNT(*) FROM assignments a "
-        "WHERE a.player_disjoint_training_eligible "
-        "AND (a.white_player_hash IN (SELECT player_hash FROM heldout_players) "
-        "  OR a.black_player_hash IN (SELECT player_hash FROM heldout_players))"
-    ).fetchone()
-    if heldout_leak is not None and int(heldout_leak[0]) > 0:
+    assignments_cursor = connection.execute(
+        "SELECT "
+        "  game_id, temporal_split, player_disjoint_training_eligible, "
+        "  is_player_holdout_game, white_player_hash, black_player_hash "
+        f"FROM ({assignments_sql}) "
+        "ORDER BY game_id"
+    )
+
+    holdout_flag_mismatches = 0
+    heldout_leak_rows = 0
+    eligibility_mismatches = 0
+    holdout_flag_samples: list[str] = []
+    leak_samples: list[str] = []
+    eligibility_samples: list[str] = []
+
+    for row in _iter_cursor_rows(assignments_cursor, chunk_size=10000):
+        game_id = str(row[0])
+        temporal_split = str(row[1])
+        actual_player_disjoint_eligible = bool(row[2])
+        actual_is_player_holdout_game = bool(row[3])
+        white_player_hash = _as_optional_str(row[4])
+        black_player_hash = _as_optional_str(row[5])
+
+        white_is_holdout = (
+            white_player_hash is not None
+            and _is_holdout_player(config, white_player_hash)
+        )
+        black_is_holdout = (
+            black_player_hash is not None
+            and _is_holdout_player(config, black_player_hash)
+        )
+        expected_is_player_holdout_game = white_is_holdout or black_is_holdout
+
+        if actual_is_player_holdout_game != expected_is_player_holdout_game:
+            holdout_flag_mismatches += 1
+            if len(holdout_flag_samples) < 5:
+                holdout_flag_samples.append(
+                    f"{game_id}: actual={actual_is_player_holdout_game}, "
+                    f"expected={expected_is_player_holdout_game}, "
+                    f"white_is_holdout={white_is_holdout}, "
+                    f"black_is_holdout={black_is_holdout}"
+                )
+
+        missing_player_hash = white_player_hash is None or black_player_hash is None
+        expected_player_disjoint_eligible = (
+            temporal_split == "train"
+            and not expected_is_player_holdout_game
+            and (
+                config.player_holdout.missing_player_hash_policy
+                == "include_in_player_disjoint_training"
+                or not missing_player_hash
+            )
+        )
+
+        if actual_player_disjoint_eligible and expected_is_player_holdout_game:
+            heldout_leak_rows += 1
+            if len(leak_samples) < 5:
+                leak_samples.append(
+                    f"{game_id}: temporal_split={temporal_split}, "
+                    f"white_is_holdout={white_is_holdout}, "
+                    f"black_is_holdout={black_is_holdout}, "
+                    f"white_player_hash={white_player_hash}, "
+                    f"black_player_hash={black_player_hash}"
+                )
+
+        if actual_player_disjoint_eligible != expected_player_disjoint_eligible:
+            eligibility_mismatches += 1
+            if len(eligibility_samples) < 5:
+                eligibility_samples.append(
+                    f"{game_id}: actual={actual_player_disjoint_eligible}, "
+                    f"expected={expected_player_disjoint_eligible}, "
+                    f"temporal_split={temporal_split}, "
+                    f"white_is_holdout={white_is_holdout}, "
+                    f"black_is_holdout={black_is_holdout}, "
+                    f"missing_player_hash={missing_player_hash}"
+                )
+
+    if holdout_flag_mismatches > 0:
+        raise RuntimeError(
+            "Validation failed: is_player_holdout_game does not match per-player "
+            "holdout eligibility. "
+            f"mismatch_rows={holdout_flag_mismatches}. "
+            f"sample_rows={holdout_flag_samples}"
+        )
+
+    if heldout_leak_rows > 0:
         raise RuntimeError(
             "Validation failed: held-out player hash leaked into "
-            "player-disjoint training population"
+            "player-disjoint training population. "
+            f"leak_rows={heldout_leak_rows}. "
+            f"sample_rows={leak_samples}"
+        )
+
+    if eligibility_mismatches > 0:
+        raise RuntimeError(
+            "Validation failed: player_disjoint_training_eligible does not match "
+            "recomputed player-holdout policy. "
+            f"mismatch_rows={eligibility_mismatches}. "
+            f"sample_rows={eligibility_samples}"
         )
 
     invalid_action = connection.execute(
@@ -1254,6 +1562,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--duckdb-path", default=None)
     parser.add_argument("--warehouse-provenance-path", default=None)
+    parser.add_argument("--date-enrichment-manifest-path", default=None)
     parser.add_argument("--max-games", type=int, default=None)
     parser.add_argument("--max-examples", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true")
@@ -1268,6 +1577,7 @@ def run_modeling_dataset_build(
     output_root_override: str | None = None,
     duckdb_path_override: str | None = None,
     warehouse_provenance_path_override: str | None = None,
+    date_enrichment_manifest_path_override: str | None = None,
     max_games_override: int | None = None,
     max_examples_override: int | None = None,
     dry_run: bool = False,
@@ -1283,11 +1593,13 @@ def run_modeling_dataset_build(
         output_root=output_root_override,
         duckdb_path=duckdb_path_override,
         warehouse_provenance_path=warehouse_provenance_path_override,
+        date_enrichment_manifest_path=date_enrichment_manifest_path_override,
         max_games=max_games_override,
         max_examples=max_examples_override,
     )
 
     upstream = _load_collection_identity(config)
+    date_enrichment = _load_date_enrichment_input(config=config, upstream=upstream)
     warehouse_provenance = load_warehouse_provenance(config.input.warehouse_provenance_path)
     _validate_warehouse_provenance_contract(
         config=config,
@@ -1295,9 +1607,19 @@ def run_modeling_dataset_build(
         warehouse_provenance=warehouse_provenance,
     )
 
-    identity_payload = _dataset_identity_payload(config, upstream, warehouse_provenance)
+    identity_payload = _dataset_identity_payload(
+        config,
+        upstream,
+        warehouse_provenance,
+        date_enrichment,
+    )
     identity_payload_hash = sha256_text(canonical_json(identity_payload))
-    modeling_dataset_id = _derive_modeling_dataset_id(config, upstream, warehouse_provenance)
+    modeling_dataset_id = _derive_modeling_dataset_id(
+        config,
+        upstream,
+        warehouse_provenance,
+        date_enrichment,
+    )
 
     run_id = f"modeling-{datetime.now(tz=UTC).strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
     dataset_root = config.output.output_root / "datasets"
@@ -1310,7 +1632,15 @@ def run_modeling_dataset_build(
             upstream=upstream,
             warehouse_provenance=warehouse_provenance,
         )
-        connection.close()
+        try:
+            if date_enrichment is not None:
+                _validate_date_enrichment_against_games_relation(
+                    connection=connection,
+                    config=config,
+                    date_enrichment=date_enrichment,
+                )
+        finally:
+            connection.close()
 
         existing_manifest = _validate_existing_dataset(
             dataset_path=final_dataset_path,
@@ -1362,6 +1692,14 @@ def run_modeling_dataset_build(
         warehouse_provenance=warehouse_provenance,
     )
 
+    date_enrichment_coverage: dict[str, int] | None = None
+    if date_enrichment is not None:
+        date_enrichment_coverage = _validate_date_enrichment_against_games_relation(
+            connection=connection,
+            config=config,
+            date_enrichment=date_enrichment,
+        )
+
     started = time.perf_counter()
     sampler = PeakRssSampler(interval_seconds=0.05)
     sampler.start()
@@ -1379,11 +1717,12 @@ def run_modeling_dataset_build(
             row_group_size=config.output.parquet_row_group_size,
         )
 
-        assignment_counts, assignment_files, game_rejections, sampling_stats = (
+        assignment_counts, assignment_files, game_rejections, sampling_stats, date_source_counts = (
             _build_game_assignments(
                 connection=connection,
                 config=config,
                 writer=writer,
+                date_enrichment=date_enrichment,
             )
         )
 
@@ -1408,6 +1747,7 @@ def run_modeling_dataset_build(
             connection=connection,
             assignments_sql=assignments_sql,
             primary_policy_sql=primary_policy_sql,
+            config=config,
         )
         split_summary = _collect_split_summary(
             connection=connection,
@@ -1462,6 +1802,18 @@ def run_modeling_dataset_build(
                 "warehouse_provenance_sha256": warehouse_provenance.warehouse_provenance_sha256,
                 "warehouse_kind": warehouse_provenance.warehouse_kind,
                 "warehouse_provenance": warehouse_provenance.payload,
+                "date_enrichment": (
+                    None
+                    if date_enrichment is None
+                    else {
+                        "date_enrichment_id": date_enrichment.date_enrichment_id,
+                        "manifest_sha256": date_enrichment.manifest_sha256,
+                        "source_month": date_enrichment.source_month,
+                        "parent_archive_sha256": date_enrichment.parent_archive_sha256,
+                        "resolver_version": date_enrichment.resolver_version,
+                        "coverage": date_enrichment_coverage,
+                    }
+                ),
             },
             "versions": {
                 "modeling_pipeline_version": config.versions.modeling_pipeline_version,
@@ -1472,6 +1824,11 @@ def run_modeling_dataset_build(
                 "position_normalization_version": config.versions.position_normalization_version,
                 "board_encoding_version": config.versions.board_encoding_version,
                 "action_encoding_version": config.versions.action_encoding_version,
+                "canonical_played_date_resolver_version": (
+                    CANONICAL_PLAYED_DATE_RESOLVER_VERSION
+                    if date_enrichment is not None
+                    else None
+                ),
             },
             "sampling": {
                 "rule_version": config.sampling.rule_version,
@@ -1528,6 +1885,7 @@ def run_modeling_dataset_build(
                 "game_assignments_by_split": assignment_counts,
                 "policy_examples_by_split": move_counts,
                 "novel_position_test_rows": novel_slice_count,
+                "game_assignments_by_played_date_source": dict(date_source_counts),
                 "selected_games": int(sum(assignment_counts.values())),
                 "selected_policy_examples": int(sum(move_counts.values())),
                 "rejected_games": int(sum(game_rejections.values())),
@@ -1614,6 +1972,11 @@ def main() -> None:
     warehouse_provenance_path_override = resolve_warehouse_provenance_path_override_or_env(
         args.warehouse_provenance_path
     )
+    date_enrichment_manifest_path_override = (
+        resolve_date_enrichment_manifest_override_or_env(
+            args.date_enrichment_manifest_path
+        )
+    )
 
     result = run_modeling_dataset_build(
         config_path=Path(args.config),
@@ -1630,6 +1993,11 @@ def main() -> None:
             None
             if warehouse_provenance_path_override is None
             else warehouse_provenance_path_override.as_posix()
+        ),
+        date_enrichment_manifest_path_override=(
+            None
+            if date_enrichment_manifest_path_override is None
+            else date_enrichment_manifest_path_override.as_posix()
         ),
         max_games_override=args.max_games,
         max_examples_override=args.max_examples,

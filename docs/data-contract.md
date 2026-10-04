@@ -441,6 +441,36 @@ created atomically before selecting pending shards and removed on completion. If
 lock owner process is no longer alive, stale-lock recovery removes the stale lock and
 proceeds safely. Read-only status checks remain lock-free.
 
+## Date Enrichment Sidecar Contract (Phase 2.1)
+
+Phase 2.1 temporal splitting now uses a separate, header-only date enrichment sidecar.
+
+Published path:
+
+- `data/processed/date_enrichment/<date_enrichment_id>/...`
+
+Canonical date policy (`utc_date_first_v1`):
+
+- if `UTCDate` is a valid calendar date, use it;
+- else if `Date` is a valid calendar date, use it;
+- else canonical date is null with source `missing_or_invalid`.
+
+Per-game sidecar grain and required fields:
+
+- `game_id` (stable identity, same derivation as ingestion);
+- `source_game_index`;
+- `canonical_played_date_iso` (`YYYY-MM-DD` or null);
+- `canonical_date_source` in `{utc_date, date, missing_or_invalid}`;
+- raw header audit fields and header-validity booleans;
+- resolver version.
+
+Manifest/reuse invariants:
+
+- shard entries are contiguous by `shard_index` and half-open global ranges;
+- one sidecar row per game in each shard range;
+- artifact checksums are validated before reuse;
+- manifest writes are atomic and resumable per shard.
+
 ## Modeling Dataset Contracts (Phase 2.1)
 
 Phase 2.1 publishes leakage-aware supervised modeling datasets under:
@@ -461,6 +491,9 @@ Key fields:
 
 - `temporal_split` in `{train, validation, test}`;
 - `temporal_split_reason` describing direct date interval or policy assignment;
+- `played_date_raw` from upstream `stg_games` (audit-preserved);
+- `played_date_iso` from canonical resolver input;
+- `played_date_source` in `{utc_date, date, missing_or_invalid, legacy_played_date}`;
 - deterministic `sample_score_u64` from hash-rule sampling;
 - `is_player_holdout_game` and `player_disjoint_training_eligible` derived from
 	deterministic player-hash holdout policy.
@@ -503,6 +536,8 @@ diagnostic and complements full test-split evaluation.
 - upstream collection identity (`collection_id`, collection-manifest hash),
 - upstream warehouse provenance identity (`provenance_version`, canonical provenance SHA-256,
 	warehouse kind),
+- upstream date enrichment identity (`date_enrichment_id`, enrichment manifest SHA-256,
+	resolver version) when enabled,
 - modeling/split/schema/encoding version identifiers,
 - sampling and player-holdout rule parameters,
 - split date ranges + missing-date policy,
@@ -557,6 +592,9 @@ Reuse contract:
 - existing published dataset can be reused only when manifest identity fields match
 	expected values;
 - identity mismatch is a hard failure (tamper/staleness guard).
+- when date enrichment is configured, modeling fails fast if enrichment does not
+	fully cover `games_relation.game_id` or if enrichment has duplicate `game_id`
+	rows.
 
 ### Two-stage sampling semantics
 

@@ -628,3 +628,42 @@ Why not chosen:
 - Collection+relation-only identity allows silent collisions across different
   warehouse snapshots.
 - Absolute paths are environment-specific and not reproducible identities.
+
+## ADR-028: UTCDate-first canonical temporal split input via resumable sidecar
+
+Context:
+- Real 2017 PGN headers contain placeholder `Date` values (`????.??.??`) at high
+  frequency while `UTCDate` remains valid and usable for calendar splitting.
+- Re-ingesting and rewriting published bronze datasets is high-cost and violates
+  data-publication immutability expectations for existing runs.
+
+Decision:
+- Introduce a header-only, shard-resumable date enrichment sidecar keyed by stable
+  `game_id` identity.
+- Canonical policy version `utc_date_first_v1`:
+  - valid `UTCDate` first,
+  - fallback to valid `Date`,
+  - else null (`missing_or_invalid`).
+- Keep existing upstream `stg_games.played_date` as audit-preserved raw input; do
+  not redefine historical meaning in-place.
+- Model builder joins sidecar by `game_id` before temporal split assignment and
+  fails fast on enrichment coverage gaps or duplicate enrichment keys.
+- Include enrichment identity (`date_enrichment_id`, manifest SHA-256, resolver
+  version) in modeling dataset identity when enabled.
+
+Consequences:
+- Temporal split correctness is recoverable for historical months without expensive
+  moves re-ingestion.
+- Published bronze/collection artifacts remain immutable; canonical date logic is
+  versioned and explicit.
+- Modeling reuse identity changes when enrichment inputs change, preventing stale
+  split reuse.
+
+Alternatives considered:
+- Rewrite historical bronze `played_date` values in-place.
+- Keep using raw `Date` with permissive missing-date assignment policies.
+
+Why not chosen:
+- In-place rewrites are operationally risky and expensive for very large months.
+- Raw `Date` fallback in this dataset class causes avoidable split skew/leakage
+  risk when `UTCDate` is available and valid.

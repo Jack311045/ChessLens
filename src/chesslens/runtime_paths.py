@@ -154,3 +154,19 @@ def resolve_modeling_manifest_override_or_env(
     if env_value is None:
         return None
     return Path(env_value)
+
+
+def resolve_date_enrichment_manifest_override_or_env(
+    date_enrichment_manifest_override: str | None,
+) -> Path | None:
+    """Resolve date enrichment manifest path from CLI override or env."""
+    if (
+        date_enrichment_manifest_override is not None
+        and date_enrichment_manifest_override.strip()
+    ):
+        return Path(date_enrichment_manifest_override)
+
+    env_value = _env("CHESSLENS_DATE_ENRICHMENT_MANIFEST_PATH")
+    if env_value is None:
+        return None
+    return Path(env_value)

@@ -1,0 +1,79 @@
+{
+  "collection_id": "56c008fed930b6f9883e688af135a334931b69abcb43db78a84558a3a07512eb",
+  "derived_data_root": "C:/temp",
+  "max_games_per_shard": 3000,
+  "results": [
+    {
+      "date_header_coverage_count": 3000,
+      "date_header_coverage_percent": 100.0,
+      "date_invalid_but_utcdate_valid_count": 3000,
+      "date_invalid_but_utcdate_valid_percent": 100.0,
+      "representative_sanitized_header_examples": [
+        {
+          "date": "????.??.??",
+          "date_valid": false,
+          "utc_date": "2016.12.31",
+          "utc_date_valid": true
+        }
+      ],
+      "sampled_game_count": 3000,
+      "shard": "shard-00000.pgn.zst",
+      "utcdate_header_coverage_count": 3000,
+      "utcdate_header_coverage_percent": 100.0,
+      "valid_date_count": 0,
+      "valid_date_percent": 0.0,
+      "valid_utcdate_count": 3000,
+      "valid_utcdate_percent": 100.0
+    },
+    {
+      "date_header_coverage_count": 3000,
+      "date_header_coverage_percent": 100.0,
+      "date_invalid_but_utcdate_valid_count": 3000,
+      "date_invalid_but_utcdate_valid_percent": 100.0,
+      "representative_sanitized_header_examples": [
+        {
+          "date": "????.??.??",
+          "date_valid": false,
+          "utc_date": "2017.01.16",
+          "utc_date_valid": true
+        }
+      ],
+      "sampled_game_count": 3000,
+      "shard": "shard-00021.pgn.zst",
+      "utcdate_header_coverage_count": 3000,
+      "utcdate_header_coverage_percent": 100.0,
+      "valid_date_count": 0,
+      "valid_date_percent": 0.0,
+      "valid_utcdate_count": 3000,
+      "valid_utcdate_percent": 100.0
+    },
+    {
+      "date_header_coverage_count": 3000,
+      "date_header_coverage_percent": 100.0,
+      "date_invalid_but_utcdate_valid_count": 3000,
+      "date_invalid_but_utcdate_valid_percent": 100.0,
+      "representative_sanitized_header_examples": [
+        {
+          "date": "????.??.??",
+          "date_valid": false,
+          "utc_date": "2017.01.31",
+          "utc_date_valid": true
+        }
+      ],
+      "sampled_game_count": 3000,
+      "shard": "shard-00042.pgn.zst",
+      "utcdate_header_coverage_count": 3000,
+      "utcdate_header_coverage_percent": 100.0,
+      "valid_date_count": 0,
+      "valid_date_percent": 0.0,
+      "valid_utcdate_count": 3000,
+      "valid_utcdate_percent": 100.0
+    }
+  ],
+  "sampled_shards": [
+    "shard-00000.pgn.zst",
+    "shard-00021.pgn.zst",
+    "shard-00042.pgn.zst"
+  ],
+  "shard_dir": "C:/temp/raw_shards/2017-01"
+}

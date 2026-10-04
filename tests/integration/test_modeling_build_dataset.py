@@ -9,9 +9,13 @@ from typing import Any, cast
 
 import chess
 import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from chesslens.features.position_encoding import normalize_fen, position_id_from_fen
+from chesslens.ingestion.date_resolution import CANONICAL_PLAYED_DATE_RESOLVER_VERSION
+from chesslens.ingestion.pgn_reader import compute_sha256
 from chesslens.modeling.build_dataset import run_modeling_dataset_build
 from chesslens.modeling.provenance import (
     WAREHOUSE_PROVENANCE_VERSION,
@@ -367,7 +371,19 @@ def _write_modeling_config(
     duckdb_path: Path,
     provenance_path: Path,
     output_root: Path,
+    date_enrichment_manifest_path: Path | None = None,
+    require_date_enrichment: bool = False,
 ) -> None:
+    enrichment_line = (
+        "  date_enrichment_manifest_path: null"
+        if date_enrichment_manifest_path is None
+        else (
+            "  date_enrichment_manifest_path: "
+            f"{date_enrichment_manifest_path.as_posix()}"
+        )
+    )
+    require_enrichment = "true" if require_date_enrichment else "false"
+
     path.write_text(
         "\n".join(
             [
@@ -375,6 +391,8 @@ def _write_modeling_config(
                 f"  collection_root: {collection_root.as_posix()}",
                 f"  duckdb_path: {duckdb_path.as_posix()}",
                 f"  warehouse_provenance_path: {provenance_path.as_posix()}",
+                enrichment_line,
+                f"  require_date_enrichment: {require_enrichment}",
                 "  expected_collection_id: collection-fixture-001",
                 "  move_context_relation: main.int_move_context",
                 "  games_relation: main.stg_games",
@@ -464,6 +482,85 @@ def _setup_fixture_environment(
         output_root=output_root,
     )
     return config_path, output_root, provenance_path
+
+
+def _write_date_enrichment_sidecar(
+    tmp_path: Path,
+    *,
+    rows: list[tuple[str, str | None, str]],
+) -> Path:
+    dataset_root = tmp_path / "date_enrichment" / "fixture-enrichment"
+    shards_dir = dataset_root / "shards"
+    shards_dir.mkdir(parents=True, exist_ok=True)
+
+    parquet_path = shards_dir / "shard-00000.parquet"
+    table = pa.table(
+        {
+            "game_id": [row[0] for row in rows],
+            "source_month": ["2013-01" for _ in rows],
+            "source_game_index": list(range(len(rows))),
+            "canonical_played_date_iso": [row[1] for row in rows],
+            "canonical_date_source": [row[2] for row in rows],
+            "date_header_raw": [None for _ in rows],
+            "utc_date_header_raw": [None for _ in rows],
+            "date_header_valid": [row[2] == "date" for row in rows],
+            "utc_date_header_valid": [row[2] == "utc_date" for row in rows],
+            "resolver_version": [CANONICAL_PLAYED_DATE_RESOLVER_VERSION for _ in rows],
+        }
+    )
+    pq.write_table(table, parquet_path, compression="zstd")
+
+    manifest = {
+        "manifest_version": "1.0.0",
+        "pipeline_version": "played_date_sidecar_v1",
+        "resolver_version": CANONICAL_PLAYED_DATE_RESOLVER_VERSION,
+        "status": "complete",
+        "date_enrichment_id": "fixture-enrichment-id",
+        "parent_archive_filename": "fixture.pgn.zst",
+        "parent_archive_sha256": "fixture-parent-sha",
+        "source_month": "2013-01",
+        "shard_manifest_identity_hash": "fixture-shard-plan",
+        "games_per_shard": 250000,
+        "selected_shard_count": 1,
+        "completed_shard_count": 1,
+        "counts": {
+            "enriched_games": len(rows),
+            "canonical_from_utc_date": sum(1 for row in rows if row[2] == "utc_date"),
+            "canonical_from_date": sum(1 for row in rows if row[2] == "date"),
+            "canonical_missing_or_invalid": sum(
+                1 for row in rows if row[2] == "missing_or_invalid"
+            ),
+            "invalid_date_but_valid_utc_date": 0,
+        },
+        "shards": [
+            {
+                "shard_index": 0,
+                "shard_filename": "shard-00000.pgn.zst",
+                "output_relpath": "shards/shard-00000.parquet",
+                "start_global_index": 0,
+                "end_global_index": len(rows),
+                "game_count": len(rows),
+                "output_bytes": parquet_path.stat().st_size,
+                "output_sha256": compute_sha256(parquet_path),
+                "canonical_from_utc_date": sum(
+                    1 for row in rows if row[2] == "utc_date"
+                ),
+                "canonical_from_date": sum(1 for row in rows if row[2] == "date"),
+                "canonical_missing_or_invalid": sum(
+                    1 for row in rows if row[2] == "missing_or_invalid"
+                ),
+                "invalid_date_but_valid_utc_date": 0,
+                "status": "complete",
+            }
+        ],
+    }
+
+    manifest_path = dataset_root / "_date_enrichment_manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def test_modeling_build_idempotent_reuse(tmp_path: Path) -> None:
@@ -840,3 +937,62 @@ def test_modeling_build_cleans_staging_on_failure(tmp_path: Path) -> None:
     staging_root = output_root / "staging"
     if staging_root.exists():
         assert list(staging_root.iterdir()) == []
+
+
+def test_modeling_build_uses_date_enrichment_manifest(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    enrichment_manifest = _write_date_enrichment_sidecar(
+        tmp_path,
+        rows=[
+            ("g_train", "2013-01-05", "utc_date"),
+            ("g_validation", "2013-01-24", "date"),
+            ("g_test", "2013-01-29", "utc_date"),
+        ],
+    )
+
+    result = run_modeling_dataset_build(
+        config_path=config_path,
+        date_enrichment_manifest_path_override=enrichment_manifest.as_posix(),
+    )
+
+    manifest = cast(dict[str, Any], json.loads(result.manifest_path.read_text(encoding="utf-8")))
+    upstream = cast(dict[str, Any], manifest["upstream"])
+    enrichment = cast(dict[str, Any], upstream["date_enrichment"])
+    counts = cast(dict[str, Any], manifest["counts"])
+
+    assert enrichment["date_enrichment_id"] == "fixture-enrichment-id"
+    assert enrichment["resolver_version"] == CANONICAL_PLAYED_DATE_RESOLVER_VERSION
+    assert counts["game_assignments_by_played_date_source"] == {"date": 1, "utc_date": 2}
+
+
+def test_modeling_build_fails_when_required_date_enrichment_missing(tmp_path: Path) -> None:
+    config_path, _, provenance_path = _setup_fixture_environment(tmp_path)
+    _write_modeling_config(
+        config_path,
+        collection_root=tmp_path / "collection",
+        duckdb_path=tmp_path / "warehouse.duckdb",
+        provenance_path=provenance_path,
+        output_root=tmp_path / "modeling",
+        date_enrichment_manifest_path=None,
+        require_date_enrichment=True,
+    )
+
+    with pytest.raises(RuntimeError, match="Date enrichment is required"):
+        run_modeling_dataset_build(config_path=config_path)
+
+
+def test_modeling_build_fails_when_enrichment_is_missing_game_ids(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+    enrichment_manifest = _write_date_enrichment_sidecar(
+        tmp_path,
+        rows=[
+            ("g_train", "2013-01-05", "utc_date"),
+            ("g_validation", "2013-01-24", "date"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="does not fully cover"):
+        run_modeling_dataset_build(
+            config_path=config_path,
+            date_enrichment_manifest_path_override=enrichment_manifest.as_posix(),
+        )
