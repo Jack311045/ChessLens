@@ -380,7 +380,7 @@ def _write_modeling_config(
                 "  games_relation: main.stg_games",
                 "",
                 "versions:",
-                "  modeling_pipeline_version: modeling_dataset_v1",
+                "  modeling_pipeline_version: modeling_dataset_v2",
                 "  split_definition_version: temporal_game_split_v1",
                 "  feature_schema_version: policy_value_features_v1",
                 "  label_definition_version: policy_value_labels_v1",
@@ -488,6 +488,33 @@ def test_modeling_build_idempotent_reuse(tmp_path: Path) -> None:
     assert manifest["counts"]["selected_policy_examples"] == 5
     assert manifest["counts"]["novel_position_test_rows"] == 1
     assert (first.dataset_path / "_SUCCESS").exists()
+
+
+def test_game_assignments_include_player_level_holdout_flags(tmp_path: Path) -> None:
+    config_path, _, _ = _setup_fixture_environment(tmp_path)
+
+    result = run_modeling_dataset_build(config_path=config_path)
+    manifest = cast(dict[str, Any], json.loads(result.manifest_path.read_text(encoding="utf-8")))
+
+    game_assignments = cast(dict[str, Any], manifest["datasets"]["game_assignments"])
+    train_partition = cast(dict[str, Any], game_assignments["train"])
+    relative_files = cast(list[str], train_partition["relative_files"])
+    assert relative_files
+
+    parquet_path = (result.dataset_path / relative_files[0]).resolve().as_posix()
+    escaped_path = parquet_path.replace("'", "''")
+
+    connection = duckdb.connect()
+    try:
+        rows = connection.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{escaped_path}')"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    column_names = [str(row[0]) for row in rows]
+    assert "white_player_is_holdout" in column_names
+    assert "black_player_is_holdout" in column_names
 
 
 def test_modeling_builder_opens_duckdb_read_only(

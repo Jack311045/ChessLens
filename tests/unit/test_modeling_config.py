@@ -20,7 +20,7 @@ def _write_config(path: Path, *, schema_version: str = "1.1.0") -> None:
                 ),
                 "  expected_collection_id: null",
                 "versions:",
-                "  modeling_pipeline_version: modeling_dataset_v1",
+                "  modeling_pipeline_version: modeling_dataset_v2",
                 "  split_definition_version: temporal_game_split_v1",
                 "  feature_schema_version: policy_value_features_v1",
                 "  label_definition_version: policy_value_labels_v1",
