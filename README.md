@@ -13,6 +13,7 @@ This repository currently implements:
 - Phase 2.1 modeling datasets: deterministic game sampling, leakage-aware temporal splits, player-holdout policy, policy/value labels, and staged idempotent publication.
 - Phase 2.1b provenance hardening: typed warehouse provenance identity, DuckDB snapshot validation, and two-stage sampling manifest semantics.
 - Phase 2.2 classical baselines: frequency policy ranking, multinomial logistic value baseline, and LightGBM ranking with leakage-audited staged publication.
+- Phase 3.1 neural training foundation: supervised policy/value residual CNN training with deterministic selection fingerprints, resume-safe checkpoints, artifact integrity checks, and staged publication.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 Phase 1 ETL and warehouse acceptance are complete, including 10M+ real-game processing and deterministic Tier-2 dbt validation.
@@ -40,11 +41,12 @@ Completed:
 - Phase 2.1 leakage-aware modeling dataset foundation with deterministic reuse checks;
 - Phase 2.1b upstream warehouse provenance hardening for safe modeling identity/reuse;
 - Phase 2.2 reproducible classical baseline training/evaluation artifacts with idempotent experiment reuse;
+- Phase 3.1 supervised neural training foundation with run/resume/status workflows and leakage-audited artifacts;
 - Phase 1 acceptance evidence in `reports/acceptance/`.
 
 Not yet completed:
 
-- custom PyTorch multi-task ResNet;
+- large-scale neural tuning and calibration studies;
 - calibration, ablations, and error analysis;
 - MLflow and Optuna experiment workflows;
 - ONNX export and FastAPI serving;
@@ -80,6 +82,7 @@ chesslens/
 ├── configs/baselines/
 ├── configs/ingestion/
 ├── configs/modeling/
+├── configs/neural/
 ├── data/
 │   ├── fixtures/
 │   ├── manifests/
@@ -163,6 +166,10 @@ Windows direct equivalents:
 - `python -m uv run python -m chesslens.modeling.build_dataset --config configs/modeling/fixture.yaml`
 - `python -m uv run python -m chesslens.modeling.generate_warehouse_provenance --warehouse-kind <full|deterministic_sample|fixture> --output <output-json-path>`
 - `python -m uv run python -m chesslens.modeling.run_baselines --config configs/baselines/fixture_smoke.yaml`
+- `python -m uv run python -m chesslens.modeling.run_neural --config configs/neural/fixture_smoke.yaml --dry-run`
+- `python -m uv run python -m chesslens.modeling.run_neural --config configs/neural/fixture_smoke.yaml --validate-only`
+- `python -m uv run python -m chesslens.modeling.run_neural --config configs/neural/local_cpu_smoke.yaml --max-epochs-this-session 2`
+- `python -m uv run python -m chesslens.modeling.run_neural --config configs/neural/local_cpu_smoke.yaml --resume`
 - `python -m uv run pytest -q`
 - `python -m uv run ruff check .`
 - `python -m uv run mypy src tests scripts`

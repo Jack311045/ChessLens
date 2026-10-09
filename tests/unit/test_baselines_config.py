@@ -17,7 +17,7 @@ def _write_config(path: Path, *, ece_bins: int = 15) -> None:
                 "input:",
                 "  modeling_manifest_path: data/modeling/datasets/example/_manifest.json",
                 "versions:",
-                "  baseline_pipeline_version: classical_baselines_v1",
+                "  baseline_pipeline_version: classical_baselines_v2",
                 "  feature_schema_version: policy_value_features_v1",
                 "  split_definition_version: temporal_game_split_v1",
                 "  rating_band_definition_version: rating_band_v1",

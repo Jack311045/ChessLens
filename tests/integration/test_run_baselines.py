@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import pickle
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +97,24 @@ def _write_parquet(path: Path, rows: list[dict[str, object]]) -> None:
     table = pa.Table.from_pylist(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, path)
+
+
+def _rewrite_policy_opening_metadata(dataset_root: Path) -> None:
+    for split in ("train", "validation", "test"):
+        parquet_path = dataset_root / "policy_examples" / f"{split}.parquet"
+        table = pq.read_table(parquet_path)
+        rows = table.to_pylist()
+        for idx, row in enumerate(rows):
+            row["eco"] = f"Z{idx + 1:02d}"
+            row["opening"] = f"Synthetic Opening {split}-{idx + 1}"
+        pq.write_table(pa.Table.from_pylist(rows), parquet_path)
+
+
+def _contains_forbidden_training_feature(feature_name: str) -> bool:
+    for prefix in ("eco", "opening_family", "opening"):
+        if feature_name == prefix or feature_name.startswith(f"{prefix}="):
+            return True
+    return False
 
 
 def _write_modeling_fixture(
@@ -603,7 +623,7 @@ def _write_baseline_config_custom(
                 "input:",
                 f"  modeling_manifest_path: {manifest_path.as_posix()}",
                 "versions:",
-                "  baseline_pipeline_version: classical_baselines_v1",
+                "  baseline_pipeline_version: classical_baselines_v2",
                 "  feature_schema_version: policy_value_features_v1",
                 "  split_definition_version: temporal_game_split_v1",
                 "  rating_band_definition_version: rating_band_v1",
@@ -724,6 +744,11 @@ def test_run_baselines_end_to_end_and_reuse(tmp_path: Path) -> None:
     manifest = json.loads(first.manifest_path.read_text(encoding="utf-8"))
     assert manifest["status"] == "complete"
     assert manifest["experiment_id"] == first.experiment_id
+    assert manifest["versions"]["baseline_pipeline_version"] == "classical_baselines_v2"
+    assert (
+        manifest["identity_payload"]["baseline_pipeline_version"]
+        == "classical_baselines_v2"
+    )
     assert "artifact_integrity" in manifest
     assert manifest["counts"]["training_population"]["full_train_row_count"] == 4
     assert manifest["counts"]["training_population"]["eligible_train_row_count"] == 3
@@ -1091,3 +1116,166 @@ def test_reuse_detects_tampered_artifact(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="integrity mismatch"):
         run_baselines(config_path=config_path)
+
+
+def test_opening_metadata_changes_do_not_affect_model_feature_dicts(tmp_path: Path) -> None:
+    manifest_a = _write_modeling_fixture(tmp_path, dataset_name="metadata_a")
+    manifest_b = _write_modeling_fixture(tmp_path, dataset_name="metadata_b")
+    _rewrite_policy_opening_metadata(manifest_b.parent)
+
+    for split in ("train", "validation", "test"):
+        split_path_a = manifest_a.parent / "policy_examples" / f"{split}.parquet"
+        split_path_b = manifest_b.parent / "policy_examples" / f"{split}.parquet"
+
+        examples_a = run_baselines_module._load_position_examples(
+            [split_path_a],
+            split=split,
+            limit=None,
+            seed=7,
+            novel_position_ids=set(),
+        )
+        examples_b = run_baselines_module._load_position_examples(
+            [split_path_b],
+            split=split,
+            limit=None,
+            seed=7,
+            novel_position_ids=set(),
+        )
+
+        sorted_a = sorted(examples_a, key=lambda item: (item.game_id, item.ply))
+        sorted_b = sorted(examples_b, key=lambda item: (item.game_id, item.ply))
+        assert len(sorted_a) == len(sorted_b)
+        assert any(
+            (left.eco != right.eco) or (left.opening != right.opening)
+            for left, right in zip(sorted_a, sorted_b, strict=True)
+        )
+
+        logistic_features_a = [
+            run_baselines_module._position_feature_dict(item) for item in sorted_a
+        ]
+        logistic_features_b = [
+            run_baselines_module._position_feature_dict(item) for item in sorted_b
+        ]
+        assert logistic_features_a == logistic_features_b
+
+        groups_a = run_baselines_module._build_candidate_groups(
+            sorted_a,
+            split=split,
+            include_all_candidates=True,
+            max_negative_candidates_per_train_position=None,
+            sampled_negative_cap_for_non_train=None,
+            seed=7,
+        )
+        groups_b = run_baselines_module._build_candidate_groups(
+            sorted_b,
+            split=split,
+            include_all_candidates=True,
+            max_negative_candidates_per_train_position=None,
+            sampled_negative_cap_for_non_train=None,
+            seed=7,
+        )
+
+        (
+            lightgbm_features_a,
+            labels_a,
+            group_sizes_a,
+        ) = run_baselines_module._flatten_candidate_groups(
+            groups_a
+        )
+        (
+            lightgbm_features_b,
+            labels_b,
+            group_sizes_b,
+        ) = run_baselines_module._flatten_candidate_groups(
+            groups_b
+        )
+
+        assert lightgbm_features_a == lightgbm_features_b
+        assert group_sizes_a == group_sizes_b
+        assert labels_a.tolist() == labels_b.tolist()
+
+
+def test_vectorizers_exclude_opening_metadata_features_but_subgroups_keep_opening_family(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_modeling_fixture(tmp_path, dataset_name="feature_exclusion_fixture")
+    output_root = tmp_path / "baselines_feature_exclusion"
+    config_path = tmp_path / "baseline_feature_exclusion.yaml"
+    _write_baseline_config(config_path, manifest_path=manifest_path, output_root=output_root)
+
+    result = run_baselines(config_path=config_path)
+
+    with (result.output_path / "logistic_pipeline.pkl").open("rb") as handle:
+        pipeline = pickle.load(handle)
+    logistic_names = [
+        str(name)
+        for name in pipeline.named_steps["vectorizer"].get_feature_names_out().tolist()
+    ]
+
+    lightgbm_importance = _read_json(result.output_path / "lightgbm_feature_importance.json")
+    lightgbm_names = [
+        str(item["name"])
+        for item in lightgbm_importance.get("features", [])
+        if isinstance(item, dict)
+    ]
+
+    assert not any(_contains_forbidden_training_feature(name) for name in logistic_names)
+    assert not any(_contains_forbidden_training_feature(name) for name in lightgbm_names)
+
+    subgroup = _read_json(result.output_path / "subgroup_metrics.json")
+    for model_key in ("ranking_frequency_test", "ranking_lightgbm_test", "logistic_wdl_test"):
+        assert "opening_family" in subgroup[model_key]
+        assert isinstance(subgroup[model_key]["opening_family"], dict)
+
+    leakage = _read_json(result.output_path / "leakage_audit.json")
+    assert leakage["excluded_training_features"] == ["eco", "opening_family", "opening"]
+    assert "eco" not in leakage["feature_allowlist"]
+    assert "opening_family" not in leakage["feature_allowlist"]
+    assert "eco" in leakage["forbidden_feature_registry"]
+    assert "opening_family" in leakage["forbidden_feature_registry"]
+    assert "opening" in leakage["forbidden_feature_registry"]
+
+
+def test_baseline_pipeline_version_changes_experiment_identity(tmp_path: Path) -> None:
+    manifest_path = _write_modeling_fixture(tmp_path, dataset_name="identity_version_fixture")
+    output_root = tmp_path / "identity_version_out"
+    config_path = tmp_path / "baseline_identity_version.yaml"
+    _write_baseline_config(config_path, manifest_path=manifest_path, output_root=output_root)
+
+    config = run_baselines_module.load_baseline_config(config_path)
+    preflight = run_baselines_module._preflight_modeling_dataset(config)
+    git_commit = run_baselines_module._git_commit()
+    identity_v2 = run_baselines_module.sha256_text(
+        run_baselines_module.canonical_json(
+            run_baselines_module._experiment_identity_payload(
+                config=config,
+                preflight=preflight,
+                git_commit=git_commit,
+            )
+        )
+    )
+
+    config_other_version = replace(
+        config,
+        versions=replace(
+            config.versions,
+            baseline_pipeline_version="classical_baselines_v2_alt",
+        ),
+    )
+    identity_other = run_baselines_module.sha256_text(
+        run_baselines_module.canonical_json(
+            run_baselines_module._experiment_identity_payload(
+                config=config_other_version,
+                preflight=preflight,
+                git_commit=git_commit,
+            )
+        )
+    )
+
+    assert identity_other != identity_v2
+
+    first = run_baselines(config_path=config_path)
+    second = run_baselines(config_path=config_path)
+    assert first.reused_existing is False
+    assert second.reused_existing is True
+    assert first.experiment_id == second.experiment_id == identity_v2
