@@ -1,6 +1,6 @@
 UV ?= uv
 
-.PHONY: setup fixture inspect-sample ingest-fixture ingest-2013-sample ingest-2013-full ingest-2017-full warehouse-preflight dbt-debug dbt-compile dbt-build dbt-docs benchmark-report benchmark-shard-parallel-fixture modeling-fixture modeling-2017-sample baselines-fixture-smoke baselines-local test lint typecheck shard-fixture shard-fixture-status ingest-fixture-shards collection-verify shard-2013-benchmark shard-2017-dry-run shard-2017 ingest-2017-shard ingest-2017-status ingest-2017-verify
+.PHONY: setup fixture inspect-sample ingest-fixture ingest-2013-sample ingest-2013-full ingest-2017-full warehouse-preflight dbt-debug dbt-compile dbt-build dbt-docs benchmark-report benchmark-shard-parallel-fixture modeling-fixture modeling-2017-sample baselines-fixture-smoke baselines-local neural-fixture-dry-run neural-fixture-validate hpo-fixture-dry-run hpo-fixture-status mlflow-import-baseline mlflow-import-neural test lint typecheck shard-fixture shard-fixture-status ingest-fixture-shards collection-verify shard-2013-benchmark shard-2017-dry-run shard-2017 ingest-2017-shard ingest-2017-status ingest-2017-verify
 
 setup:
 	$(UV) sync --dev
@@ -55,6 +55,24 @@ baselines-fixture-smoke:
 
 baselines-local:
 	$(UV) run python -m chesslens.modeling.run_baselines --config configs/baselines/local_real.yaml
+
+neural-fixture-dry-run:
+	$(UV) run python -m chesslens.modeling.run_neural --config configs/neural/fixture_smoke.yaml --evaluation-scope validation_only --dry-run
+
+neural-fixture-validate:
+	$(UV) run python -m chesslens.modeling.run_neural --config configs/neural/fixture_smoke.yaml --validate-only
+
+hpo-fixture-dry-run:
+	$(UV) run python -m chesslens.modeling.run_neural_hpo --config configs/hpo/fixture_smoke.yaml --dry-run --json
+
+hpo-fixture-status:
+	$(UV) run python -m chesslens.modeling.run_neural_hpo --config configs/hpo/fixture_smoke.yaml --status --json
+
+mlflow-import-baseline:
+	$(UV) run python -m chesslens.modeling.run_mlflow_import --tracking-config configs/mlflow/local_tracking.yaml --kind baseline --manifest "$$CHESSLENS_BASELINE_MANIFEST_PATH" --mode historical --json
+
+mlflow-import-neural:
+	$(UV) run python -m chesslens.modeling.run_mlflow_import --tracking-config configs/mlflow/local_tracking.yaml --kind neural --manifest "$$CHESSLENS_NEURAL_MANIFEST_PATH" --mode historical --json
 
 # --- Phase 1.2c: resumable, game-boundary-aware sharding ---
 

@@ -1,0 +1,38 @@
+reference:
+  neural_config_path: configs/neural/local_cpu_smoke.yaml
+  modeling_manifest_path_override: C:/ChessLensWork/data/modeling/datasets/standard_2013_01_100k/_manifest.json
+  baseline_reference_manifest_path_override: C:/ChessLensWork/data/baselines/experiments/REPLACE_WITH_BASELINE_EXPERIMENT_ID/_manifest.json
+
+study:
+  name: real_100k_validation_hpo
+  output_root: C:/ChessLensWork/data/neural_hpo
+  storage_path: C:/ChessLensWork/data/neural_hpo/studies/real_100k_validation_hpo/optuna_study.db
+  evaluation_scope: validation_only
+  objective_metric: validation.policy.mrr
+
+budget:
+  max_total_trials: 24
+  max_new_trials_per_invocation: 4
+
+search_space:
+  learning_rate:
+    low: 0.0001
+    high: 0.002
+    log: true
+  weight_decay:
+    low: 0.000001
+    high: 0.001
+    log: true
+  value_weight_choices: [0.2, 0.4, 0.6]
+
+runtime:
+  seed: 20240131
+  threads: 1
+  device: cpu
+
+pruning:
+  startup_trials: 3
+  warmup_epochs: 2
+
+behavior:
+  strict: true

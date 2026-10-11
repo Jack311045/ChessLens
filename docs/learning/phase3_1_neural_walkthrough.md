@@ -76,6 +76,10 @@ Resume + checkpoints:
 - Resume requires matching experiment identity hash and experiment ID.
 - Session-limited training is supported with `--max-epochs-this-session`.
 
+Evaluation scope:
+- `--evaluation-scope full` (default) evaluates both validation and test splits.
+- `--evaluation-scope validation_only` skips test-split evaluation for HPO-safe loops.
+
 Publication:
 - Artifacts are written to staging first, then atomically promoted to experiment root.
 - Manifest records artifact checksums and sizes.

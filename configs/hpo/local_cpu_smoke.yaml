@@ -1,0 +1,38 @@
+reference:
+  neural_config_path: configs/neural/local_cpu_smoke.yaml
+  modeling_manifest_path_override: data/modeling/datasets/local_cpu_smoke/_manifest.json
+  baseline_reference_manifest_path_override: null
+
+study:
+  name: local_cpu_validation_hpo
+  output_root: data/neural_hpo
+  storage_path: data/neural_hpo/studies/local_cpu_validation_hpo/optuna_study.db
+  evaluation_scope: validation_only
+  objective_metric: validation.policy.mrr
+
+budget:
+  max_total_trials: 12
+  max_new_trials_per_invocation: 3
+
+search_space:
+  learning_rate:
+    low: 0.0002
+    high: 0.002
+    log: true
+  weight_decay:
+    low: 0.000005
+    high: 0.0005
+    log: true
+  value_weight_choices: [0.2, 0.4, 0.6]
+
+runtime:
+  seed: 20240131
+  threads: 1
+  device: cpu
+
+pruning:
+  startup_trials: 2
+  warmup_epochs: 1
+
+behavior:
+  strict: true

@@ -1,0 +1,38 @@
+reference:
+  neural_config_path: configs/neural/fixture_smoke.yaml
+  modeling_manifest_path_override: data/modeling/datasets/fixture_2013_01_first20/_manifest.json
+  baseline_reference_manifest_path_override: null
+
+study:
+  name: fixture_validation_hpo
+  output_root: data/neural_hpo
+  storage_path: data/neural_hpo/studies/fixture_validation_hpo/optuna_study.db
+  evaluation_scope: validation_only
+  objective_metric: validation.policy.mrr
+
+budget:
+  max_total_trials: 8
+  max_new_trials_per_invocation: 2
+
+search_space:
+  learning_rate:
+    low: 0.0003
+    high: 0.003
+    log: true
+  weight_decay:
+    low: 0.00001
+    high: 0.001
+    log: true
+  value_weight_choices: [0.2, 0.4, 0.6]
+
+runtime:
+  seed: 20240131
+  threads: 1
+  device: cpu
+
+pruning:
+  startup_trials: 1
+  warmup_epochs: 1
+
+behavior:
+  strict: true

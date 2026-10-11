@@ -1,0 +1,6 @@
+tracking:
+  experiment_name: ChessLensLocal
+  sqlite_path: data/mlflow/tracking.db
+  artifact_root: data/mlflow/artifacts
+  strict: true
+  default_include_model_weights: false

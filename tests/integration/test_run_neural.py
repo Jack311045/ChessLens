@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 import torch
 
+import chesslens.modeling.neural_training as neural_training_module
 from chesslens.modeling.neural_training import run_neural
 from chesslens.modeling.run_baselines import run_baselines
 from tests.integration.test_run_baselines import (
@@ -211,3 +213,58 @@ def test_run_neural_baseline_compatibility_compare(tmp_path: Path) -> None:
     compatibility = result.summary["baseline_compatibility"]
     assert isinstance(compatibility, dict)
     assert compatibility["compatible"] is True
+
+
+def test_run_neural_validation_scope_has_distinct_identity_and_no_test_metrics(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_modeling_fixture(tmp_path)
+    output_root = tmp_path / "neural_output"
+    config_path = tmp_path / "neural.yaml"
+    _write_neural_config(config_path, manifest_path=manifest_path, output_root=output_root)
+
+    full_run = run_neural(config_path=config_path)
+    validation_only_run = run_neural(
+        config_path=config_path,
+        evaluation_scope="validation_only",
+    )
+
+    assert full_run.completed is True
+    assert validation_only_run.completed is True
+    assert full_run.experiment_id != validation_only_run.experiment_id
+
+    validation_manifest = json.loads(validation_only_run.manifest_path.read_text(encoding="utf-8"))
+    assert validation_manifest["identity_payload"]["evaluation_scope"] == "validation_only"
+    assert validation_manifest["evaluation_scope"] == "validation_only"
+
+    aggregate_metrics = json.loads(
+        (validation_only_run.output_path / "aggregate_metrics.json").read_text(encoding="utf-8")
+    )
+    assert aggregate_metrics["evaluation_scope"] == "validation_only"
+    assert "validation" in aggregate_metrics["policy"]
+    assert "test" not in aggregate_metrics["policy"]
+    assert "validation" in aggregate_metrics["value"]
+    assert "test" not in aggregate_metrics["value"]
+
+
+def test_run_neural_validation_scope_skips_test_encoding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_path = _write_modeling_fixture(tmp_path)
+    output_root = tmp_path / "neural_output"
+    config_path = tmp_path / "neural.yaml"
+    _write_neural_config(config_path, manifest_path=manifest_path, output_root=output_root)
+
+    original_encode_examples = neural_training_module.encode_examples
+
+    def _guarded_encode_examples(*args: Any, **kwargs: Any) -> Any:
+        split = kwargs.get("split")
+        if split == "test":
+            raise AssertionError("test split encoding should not run for validation_only scope")
+        return original_encode_examples(*args, **kwargs)
+
+    monkeypatch.setattr(neural_training_module, "encode_examples", _guarded_encode_examples)
+
+    result = run_neural(config_path=config_path, evaluation_scope="validation_only")
+    assert result.completed is True

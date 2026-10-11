@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from chesslens.modeling.mlflow_tracking import import_manifest_to_mlflow
 from chesslens.modeling.neural_training import run_neural, run_neural_result_json
 
 DEFAULT_CONFIG_PATH = Path("configs/neural/fixture_smoke.yaml")
@@ -98,6 +99,32 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit full machine-readable JSON output",
     )
+    parser.add_argument(
+        "--evaluation-scope",
+        choices=("full", "validation_only"),
+        default="full",
+        help=(
+            "Evaluation scope for completed training runs. "
+            "Use validation_only for HPO-style runs that must not evaluate on test split."
+        ),
+    )
+    parser.add_argument(
+        "--mlflow-tracking-config",
+        type=Path,
+        default=None,
+        help="Optional MLflow tracking config path to auto-log completed runs",
+    )
+    parser.add_argument(
+        "--mlflow-run-origin",
+        choices=("historical", "current"),
+        default="current",
+        help="Run-origin mode tag used for optional MLflow logging",
+    )
+    parser.add_argument(
+        "--mlflow-include-model-weights",
+        action="store_true",
+        help="When MLflow logging is enabled, include model weights artifact",
+    )
     return parser
 
 
@@ -118,6 +145,10 @@ def _summary_lines(payload: dict[str, Any]) -> list[str]:
     status = summary.get("status")
     if status is not None:
         lines.append(f"status={status}")
+
+    evaluation_scope = summary.get("evaluation_scope")
+    if evaluation_scope is not None:
+        lines.append(f"evaluation_scope={evaluation_scope}")
 
     baseline_compat = summary.get("baseline_compatibility")
     if isinstance(baseline_compat, dict):
@@ -158,12 +189,44 @@ def main(argv: list[str] | None = None) -> int:
             resume=bool(args.resume),
             status_only=bool(args.status),
             max_epochs_this_session=args.max_epochs_this_session,
+            evaluation_scope=args.evaluation_scope,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"run_neural_error: {exc}", file=sys.stderr)
         return 1
 
     payload = run_neural_result_json(result)
+
+    if (
+        args.mlflow_tracking_config is not None
+        and result.completed
+        and not result.reused_existing
+        and not result.status_only
+        and not result.dry_run
+        and not result.validate_only
+    ):
+        try:
+            mlflow_result = import_manifest_to_mlflow(
+                manifest_path=result.manifest_path,
+                pipeline_kind="neural",
+                tracking_config_path=args.mlflow_tracking_config,
+                mode=args.mlflow_run_origin,
+                include_model_weights=bool(args.mlflow_include_model_weights),
+            )
+            payload["mlflow"] = {
+                "enabled": True,
+                "tracking_config": args.mlflow_tracking_config.as_posix(),
+                "run_id": mlflow_result.mlflow_run_id,
+                "experiment_id": mlflow_result.mlflow_experiment_id,
+                "reused_existing": mlflow_result.reused_existing,
+                "mode": mlflow_result.mode,
+            }
+        except Exception as exc:  # noqa: BLE001
+            payload["mlflow"] = {
+                "enabled": True,
+                "tracking_config": args.mlflow_tracking_config.as_posix(),
+                "error": str(exc),
+            }
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))

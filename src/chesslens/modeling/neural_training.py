@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import psutil
@@ -91,6 +91,8 @@ NEURAL_REQUIRED_ARTIFACTS: tuple[str, ...] = (
     "model_state_last.pt",
     "environment.json",
 )
+SUPPORTED_EVALUATION_SCOPES: tuple[str, ...] = ("full", "validation_only")
+EvaluationScope = Literal["full", "validation_only"]
 
 
 @dataclass(frozen=True)
@@ -342,12 +344,13 @@ def _identity_payload(
     preflight: PreflightSummary,
     fingerprints: SelectionFingerprints,
     git_commit: str | None,
+    evaluation_scope: EvaluationScope,
 ) -> dict[str, Any]:
     effective = neural_config_identity_payload(config)
     effective["input"].pop("modeling_manifest_path", None)
     effective["input"].pop("baseline_reference_manifest_path", None)
 
-    return {
+    payload = {
         "modeling_dataset_id": preflight.modeling_dataset_id,
         "modeling_manifest_sha256": preflight.modeling_manifest_sha256,
         "feature_schema_version": preflight.feature_schema_version,
@@ -361,6 +364,9 @@ def _identity_payload(
         "effective_config": effective,
         "git_commit": git_commit,
     }
+    if evaluation_scope != "full":
+        payload["evaluation_scope"] = evaluation_scope
+    return payload
 
 
 def _experiment_id(identity_payload: dict[str, Any]) -> str:
@@ -850,7 +856,14 @@ def run_neural(
     resume: bool = False,
     status_only: bool = False,
     max_epochs_this_session: int | None = None,
+    evaluation_scope: EvaluationScope = "full",
 ) -> NeuralRunResult:
+    if evaluation_scope not in SUPPORTED_EVALUATION_SCOPES:
+        raise RuntimeError(
+            "Unsupported evaluation_scope; expected one of "
+            + ", ".join(SUPPORTED_EVALUATION_SCOPES)
+        )
+
     config = load_neural_config(config_path)
     config = apply_neural_cli_overrides(
         config,
@@ -880,6 +893,7 @@ def run_neural(
         preflight=preflight,
         fingerprints=fingerprints,
         git_commit=git_commit,
+        evaluation_scope=evaluation_scope,
     )
     identity_hash = sha256_text(canonical_json(identity_payload))
     experiment_id = _experiment_id(identity_payload)
@@ -903,6 +917,7 @@ def run_neural(
             experiment_id=experiment_id,
         )
         summary["baseline_compatibility"] = baseline_compatibility
+        summary["evaluation_scope"] = evaluation_scope
         return NeuralRunResult(
             run_id=run_id,
             experiment_id=experiment_id,
@@ -927,6 +942,7 @@ def run_neural(
         summary = {
             "status": "reused_existing_complete_experiment",
             "baseline_compatibility": baseline_compatibility,
+            "evaluation_scope": evaluation_scope,
         }
         return NeuralRunResult(
             run_id=run_id,
@@ -948,6 +964,7 @@ def run_neural(
             "status": "dry_run",
             "run_id": run_id,
             "experiment_id": experiment_id,
+            "evaluation_scope": evaluation_scope,
             "modeling_manifest_path": _display_path(preflight.modeling_manifest_path),
             "modeling_dataset_id": preflight.modeling_dataset_id,
             "selection_fingerprints": {
@@ -988,13 +1005,16 @@ def run_neural(
         split="validation",
         preprocessor=preprocessor,
     )
-    test_encoded = encode_examples(test_examples, split="test", preprocessor=preprocessor)
+    test_encoded: list[EncodedExample] | None = None
+    if validate_only or evaluation_scope == "full":
+        test_encoded = encode_examples(test_examples, split="test", preprocessor=preprocessor)
 
     if validate_only:
         summary = {
             "status": "validate_only_pass",
             "run_id": run_id,
             "experiment_id": experiment_id,
+            "evaluation_scope": evaluation_scope,
             "counts": {
                 "split_row_counts_full": preflight.split_row_counts,
                 "split_row_counts_selected": {
@@ -1312,6 +1332,7 @@ def run_neural(
                         "status": "session_limit_reached",
                         "next_epoch": start_epoch + session_epoch_count,
                         "baseline_compatibility": baseline_compatibility,
+                        "evaluation_scope": evaluation_scope,
                     },
                 )
 
@@ -1321,58 +1342,106 @@ def run_neural(
             best_payload = _load_checkpoint(best_checkpoint_path)
             model.load_state_dict(cast(dict[str, Any], best_payload["model_state"]))
 
-            test_eval = _evaluate_examples(
+            best_epoch_for_eval = best_epoch if best_epoch is not None else 0
+            best_validation_eval = _evaluate_examples(
                 model=model,
-                examples_encoded=test_encoded,
-                examples_raw=test_examples,
+                examples_encoded=validation_encoded,
+                examples_raw=validation_examples,
                 batch_size=config.optimization.batch_size,
                 seed=config.runtime.seed,
-                epoch=(best_epoch if best_epoch is not None else 0),
+                epoch=best_epoch_for_eval,
                 device=device,
                 ranking_cutoffs=config.evaluation.ranking_cutoffs,
                 ece_bins=config.evaluation.ece_bins,
                 loss_weights=weights,
             )
 
+            test_eval: EvalSummary | None = None
+            if evaluation_scope == "full":
+                if test_encoded is None:
+                    raise RuntimeError("Full evaluation scope requires encoded test examples")
+                test_eval = _evaluate_examples(
+                    model=model,
+                    examples_encoded=test_encoded,
+                    examples_raw=test_examples,
+                    batch_size=config.optimization.batch_size,
+                    seed=config.runtime.seed,
+                    epoch=best_epoch_for_eval,
+                    device=device,
+                    ranking_cutoffs=config.evaluation.ranking_cutoffs,
+                    ece_bins=config.evaluation.ece_bins,
+                    loss_weights=weights,
+                )
+
             player_holdout_interpretation = _player_holdout_interpretation(
                 training_population.mode
             )
-            subgroup_metrics = {
-                "neural_policy_test": _annotate_player_holdout_subgroup(
-                    _ranking_subgroups(
-                        test_eval.ranking_groups,
-                        config.evaluation.ranking_cutoffs,
+            if evaluation_scope == "full":
+                if test_eval is None:
+                    raise RuntimeError("Missing test evaluation payload for full evaluation scope")
+                subgroup_metrics = {
+                    "neural_policy_test": _annotate_player_holdout_subgroup(
+                        _ranking_subgroups(
+                            test_eval.ranking_groups,
+                            config.evaluation.ranking_cutoffs,
+                        ),
+                        interpretation=player_holdout_interpretation,
                     ),
-                    interpretation=player_holdout_interpretation,
-                ),
-                "neural_value_test": _annotate_player_holdout_subgroup(
-                    _logistic_subgroups(
-                        test_examples,
-                        test_eval.value_probs,
-                        ece_bins=config.evaluation.ece_bins,
+                    "neural_value_test": _annotate_player_holdout_subgroup(
+                        _logistic_subgroups(
+                            test_examples,
+                            test_eval.value_probs,
+                            ece_bins=config.evaluation.ece_bins,
+                        ),
+                        interpretation=player_holdout_interpretation,
                     ),
-                    interpretation=player_holdout_interpretation,
-                ),
-            }
+                }
+            else:
+                subgroup_metrics = {
+                    "neural_policy_validation": _annotate_player_holdout_subgroup(
+                        _ranking_subgroups(
+                            best_validation_eval.ranking_groups,
+                            config.evaluation.ranking_cutoffs,
+                        ),
+                        interpretation=player_holdout_interpretation,
+                    ),
+                    "neural_value_validation": _annotate_player_holdout_subgroup(
+                        _logistic_subgroups(
+                            validation_examples,
+                            best_validation_eval.value_probs,
+                            ece_bins=config.evaluation.ece_bins,
+                        ),
+                        interpretation=player_holdout_interpretation,
+                    ),
+                }
 
-            aggregate_metrics = {
+            aggregate_metrics: dict[str, Any] = {
+                "evaluation_scope": evaluation_scope,
                 "training_population": asdict(training_population),
                 "policy": {
-                    "test": test_eval.policy_metrics,
+                    "validation": best_validation_eval.policy_metrics,
                     "selection_metric": config.training.selection_metric,
                     "best_validation_policy_mrr": best_metric,
                     "best_epoch": best_epoch,
                 },
                 "value": {
-                    "test": test_eval.value_metrics,
+                    "validation": best_validation_eval.value_metrics,
                     "class_order": list(WDL_CLASS_ORDER),
                 },
                 "losses": {
-                    "test_total_loss": test_eval.total_loss,
-                    "test_policy_loss": test_eval.policy_loss,
-                    "test_value_loss": test_eval.value_loss,
+                    "validation_total_loss": best_validation_eval.total_loss,
+                    "validation_policy_loss": best_validation_eval.policy_loss,
+                    "validation_value_loss": best_validation_eval.value_loss,
                 },
             }
+            if evaluation_scope == "full":
+                if test_eval is None:
+                    raise RuntimeError("Missing test evaluation payload for full evaluation scope")
+                aggregate_metrics["policy"]["test"] = test_eval.policy_metrics
+                aggregate_metrics["value"]["test"] = test_eval.value_metrics
+                aggregate_metrics["losses"]["test_total_loss"] = test_eval.total_loss
+                aggregate_metrics["losses"]["test_policy_loss"] = test_eval.policy_loss
+                aggregate_metrics["losses"]["test_value_loss"] = test_eval.value_loss
 
             leakage_audit = {
                 "game_id_overlap_counts": preflight.game_id_overlap_counts,
@@ -1388,8 +1457,10 @@ def run_neural(
                     "train_only_preprocessing": True,
                     "validation_test_not_used_for_fit": True,
                     "opening_metadata_excluded_from_features": True,
+                    "test_not_encoded_or_evaluated": (evaluation_scope == "validation_only"),
                 },
                 "baseline_compatibility": baseline_compatibility,
+                "evaluation_scope": evaluation_scope,
             }
 
             leakage_md = "\n".join(
@@ -1540,6 +1611,7 @@ def run_neural(
                 },
                 "created_at_utc": _utc_now_iso(),
                 "git_commit": git_commit,
+                "evaluation_scope": evaluation_scope,
                 "artifacts": artifact_files,
                 "artifact_integrity": artifact_integrity,
                 "baseline_compatibility": baseline_compatibility,
@@ -1570,12 +1642,14 @@ def run_neural(
                     "experiment_id": experiment_id,
                     "best_epoch": best_epoch,
                     "best_metric": best_metric,
+                    "evaluation_scope": evaluation_scope,
                     "published_manifest_path": _display_path(experiment_root / "_manifest.json"),
                 },
             )
 
             summary = {
                 "status": "complete",
+                "evaluation_scope": evaluation_scope,
                 "best_epoch": best_epoch,
                 "best_validation_policy_mrr": best_metric,
                 "baseline_compatibility": baseline_compatibility,
@@ -1605,6 +1679,7 @@ def run_neural(
                     "updated_at_utc": _utc_now_iso(),
                     "run_id": run_id,
                     "experiment_id": experiment_id,
+                    "evaluation_scope": evaluation_scope,
                     "last_checkpoint": _display_path(last_checkpoint_path),
                 },
             )
@@ -1623,6 +1698,7 @@ def run_neural(
                 summary={
                     "status": "interrupted",
                     "baseline_compatibility": baseline_compatibility,
+                    "evaluation_scope": evaluation_scope,
                 },
             )
         finally:
