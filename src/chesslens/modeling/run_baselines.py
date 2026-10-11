@@ -108,6 +108,15 @@ FORBIDDEN_FEATURE_COLUMNS: tuple[str, ...] = (
     "future_clock_annotation",
     "termination_target",
     "value_target_wdl",
+    "eco",
+    "opening_family",
+    "opening",
+)
+
+EXCLUDED_TRAINING_FEATURES: tuple[str, ...] = (
+    "eco",
+    "opening_family",
+    "opening",
 )
 
 FEATURE_DEFINITIONS: dict[str, str] = {
@@ -126,8 +135,6 @@ FEATURE_DEFINITIONS: dict[str, str] = {
     "rating_difference": "Mover rating minus opponent rating.",
     "mover_rating_band": "Versioned rating band bucket.",
     "time_control_category": "Bullet/blitz/rapid/classical/unknown category.",
-    "eco": "ECO code if present at prediction point.",
-    "opening_family": "Opening family derived from ECO prefix.",
     "action_index": "Canonical legal action index for candidate move.",
     "from_square": "Candidate move from-square index.",
     "to_square": "Candidate move to-square index.",
@@ -1102,8 +1109,6 @@ def _position_context_features(example: PositionExample, board: chess.Board) -> 
         ),
         "mover_rating_band": mover_rating_band,
         "time_control_category": raw_tc_category,
-        "eco": (example.eco if example.eco is not None else "unknown"),
-        "opening_family": _opening_family(example.eco),
     }
     context.update(_pawn_structure_counts(board, chess.WHITE, "white"))
     context.update(_pawn_structure_counts(board, chess.BLACK, "black"))
@@ -2278,6 +2283,7 @@ def run_baselines(
         "normalized_fen_overlap_counts": preflight.normalized_fen_overlap_counts,
         "player_overlap_counts": preflight.player_overlap_counts,
         "feature_allowlist": sorted(FEATURE_DEFINITIONS),
+        "excluded_training_features": list(EXCLUDED_TRAINING_FEATURES),
         "forbidden_feature_registry": list(FORBIDDEN_FEATURE_COLUMNS),
         "training_population": {
             "mode": training_population_summary.mode,
@@ -2789,6 +2795,7 @@ def run_baselines(
                     f"checked_rows={legality_validation.checked_rows}, "
                     f"status={legality_validation.status}"
                 ),
+                "- excluded training features: " + ", ".join(EXCLUDED_TRAINING_FEATURES),
                 "",
                 "## Confirmations",
                 "- frequency counts fit on train only: yes",

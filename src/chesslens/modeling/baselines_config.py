@@ -11,7 +11,7 @@ import yaml
 
 from chesslens.modeling.contracts import FEATURE_SCHEMA_VERSION, SPLIT_DEFINITION_VERSION
 
-BASELINE_PIPELINE_VERSION = "classical_baselines_v1"
+BASELINE_PIPELINE_VERSION = "classical_baselines_v2"
 RATING_BAND_DEFINITION_VERSION = "rating_band_v1"
 GAME_PHASE_DEFINITION_VERSION = "game_phase_v1"
 

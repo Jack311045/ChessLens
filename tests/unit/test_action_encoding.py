@@ -114,3 +114,9 @@ def test_legal_mask_matches_legal_move_count_and_no_collisions() -> None:
     assert mask.shape == (ACTION_SPACE_SIZE,)
     assert mask.dtype == np.bool_
     assert int(mask.sum()) == board.legal_moves.count()
+
+
+def test_e2e4_maps_to_fixed_policy_index_877() -> None:
+    board = chess.Board()
+    index = _idx("e2e4", board)
+    assert index == 877

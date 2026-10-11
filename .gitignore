@@ -37,6 +37,10 @@ mlruns/
 checkpoints/
 *.onnx
 
+# Phase 3.2 local MLflow/HPO outputs
+data/mlflow/
+data/neural_hpo/
+
 # dbt generated artifacts
 dbt/target/
 dbt/logs/
