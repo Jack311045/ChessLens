@@ -1006,7 +1006,7 @@ def run_neural(
         preprocessor=preprocessor,
     )
     test_encoded: list[EncodedExample] | None = None
-    if validate_only or evaluation_scope == "full":
+    if evaluation_scope == "full":
         test_encoded = encode_examples(test_examples, split="test", preprocessor=preprocessor)
 
     if validate_only:

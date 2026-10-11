@@ -51,6 +51,10 @@ _NEURAL_REQUIRED_ARTIFACTS: tuple[str, ...] = (
 )
 
 _JSON_ARTIFACT_EXTENSIONS: tuple[str, ...] = (".json", ".md", ".txt")
+_IMPORT_STATUS_TAG = "chesslens_import_status"
+_IMPORT_STATUS_COMPLETE = "complete"
+_IMPORT_STATUS_IN_PROGRESS = "in_progress"
+_IMPORT_STATUS_FAILED = "failed"
 
 
 @dataclass(frozen=True)
@@ -260,6 +264,74 @@ def _log_epoch_history_if_present(experiment_root: Path) -> None:
             mlflow.log_metric(metric_key, metric_value, step=step)
 
 
+def _namespaced_aggregate_metrics(
+    *,
+    aggregate_payload: dict[str, Any],
+    pipeline_kind: PipelineKind,
+) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+
+    if pipeline_kind == "neural":
+        policy_payload = aggregate_payload.get("policy")
+        value_payload = aggregate_payload.get("value")
+        losses_payload = aggregate_payload.get("losses")
+
+        if isinstance(policy_payload, dict):
+            best = policy_payload.get("best_validation_policy_mrr")
+            if isinstance(best, (int, float)) and math.isfinite(float(best)):
+                metrics["validation.policy.best_mrr"] = float(best)
+            for split in ("validation", "test"):
+                split_payload = policy_payload.get(split)
+                if isinstance(split_payload, dict):
+                    metrics.update(
+                        _flatten_numeric_metrics(
+                            split_payload,
+                            prefix=f"{split}.policy",
+                        )
+                    )
+
+        if isinstance(value_payload, dict):
+            for split in ("validation", "test"):
+                split_payload = value_payload.get(split)
+                if isinstance(split_payload, dict):
+                    metrics.update(
+                        _flatten_numeric_metrics(
+                            split_payload,
+                            prefix=f"{split}.value",
+                        )
+                    )
+
+        if isinstance(losses_payload, dict):
+            for split in ("validation", "test"):
+                for suffix in ("total_loss", "policy_loss", "value_loss"):
+                    key = f"{split}_{suffix}"
+                    value = losses_payload.get(key)
+                    if isinstance(value, (int, float)) and math.isfinite(float(value)):
+                        metrics[f"{split}.loss.{suffix}"] = float(value)
+
+        return metrics
+
+    lightgbm_payload = aggregate_payload.get("lightgbm_policy")
+    if isinstance(lightgbm_payload, dict):
+        for split in ("validation", "test"):
+            split_payload = lightgbm_payload.get(split)
+            if isinstance(split_payload, dict):
+                metrics.update(
+                    _flatten_numeric_metrics(split_payload, prefix=f"{split}.policy")
+                )
+
+    logistic_payload = aggregate_payload.get("logistic_wdl")
+    if isinstance(logistic_payload, dict):
+        for split in ("validation", "test"):
+            split_payload = logistic_payload.get(split)
+            if isinstance(split_payload, dict):
+                metrics.update(
+                    _flatten_numeric_metrics(split_payload, prefix=f"{split}.value")
+                )
+
+    return metrics
+
+
 def _log_default_artifacts(
     *,
     experiment_root: Path,
@@ -332,6 +404,7 @@ def import_manifest_to_mlflow(
 
     mlflow_experiment_id = _ensure_experiment(config)
     mode_tag = "historical_import" if mode == "historical" else "current_code"
+    manifest_sha256 = _file_sha256(manifest_path)
 
     existing = _existing_run_for_experiment(
         mlflow_experiment_id=mlflow_experiment_id,
@@ -353,6 +426,25 @@ def import_manifest_to_mlflow(
             raise RuntimeError(
                 "MLflow conflict: existing run has different run origin tag; "
                 f"existing={existing_mode!r}, requested={mode_tag!r}"
+            )
+
+        existing_import_status = str(tags.get(_IMPORT_STATUS_TAG, "")).strip().lower()
+        existing_manifest_sha = str(tags.get("chesslens_source_manifest_sha256", "")).strip()
+        if existing_import_status != _IMPORT_STATUS_COMPLETE:
+            raise RuntimeError(
+                "MLflow run exists but import is incomplete/failed. "
+                "Resolve the partial run explicitly before retrying import. "
+                f"run_id={existing.info.run_id} status={existing_import_status!r}"
+            )
+        if str(existing.info.status).strip().upper() != "FINISHED":
+            raise RuntimeError(
+                "MLflow run exists but is not FINISHED. Resolve run state before reuse: "
+                f"run_id={existing.info.run_id} status={existing.info.status!r}"
+            )
+        if existing_manifest_sha and existing_manifest_sha != manifest_sha256:
+            raise RuntimeError(
+                "MLflow conflict: existing complete import run references a different "
+                "source manifest checksum"
             )
 
         return MlflowImportResult(
@@ -385,38 +477,62 @@ def import_manifest_to_mlflow(
                 "chesslens_imported_at_utc": _utc_now_iso(),
                 "chesslens_manifest_path": manifest_path.as_posix(),
                 "chesslens_git_commit": str(manifest.get("git_commit") or ""),
+                "chesslens_source_manifest_sha256": manifest_sha256,
+                _IMPORT_STATUS_TAG: _IMPORT_STATUS_IN_PROGRESS,
             }
         )
 
-        identity_payload = manifest.get("identity_payload")
-        if isinstance(identity_payload, dict):
-            identity_params = _flatten_params(identity_payload, prefix="identity")
-            for key, value in sorted(identity_params.items()):
-                if key:
-                    mlflow.log_param(key, value)
+        try:
+            identity_payload = manifest.get("identity_payload")
+            if isinstance(identity_payload, dict):
+                identity_params = _flatten_params(identity_payload, prefix="identity")
+                for key, value in sorted(identity_params.items()):
+                    if key:
+                        mlflow.log_param(key, value)
 
-        modeling_input = manifest.get("modeling_input")
-        if isinstance(modeling_input, dict):
-            modeling_params = _flatten_params(modeling_input, prefix="modeling")
-            for key, value in sorted(modeling_params.items()):
-                if key:
-                    mlflow.log_param(key, value)
+            modeling_input = manifest.get("modeling_input")
+            if isinstance(modeling_input, dict):
+                modeling_params = _flatten_params(modeling_input, prefix="modeling")
+                for key, value in sorted(modeling_params.items()):
+                    if key:
+                        mlflow.log_param(key, value)
 
-        aggregate_metrics_path = experiment_root / "aggregate_metrics.json"
-        if aggregate_metrics_path.exists():
-            aggregate_payload = json.loads(aggregate_metrics_path.read_text(encoding="utf-8"))
-            aggregate_metrics = _flatten_numeric_metrics(aggregate_payload)
-            for metric_key, metric_value in sorted(aggregate_metrics.items()):
-                if metric_key:
-                    mlflow.log_metric(metric_key, metric_value)
+            aggregate_metrics_path = experiment_root / "aggregate_metrics.json"
+            if aggregate_metrics_path.exists():
+                aggregate_payload = json.loads(aggregate_metrics_path.read_text(encoding="utf-8"))
+                if isinstance(aggregate_payload, dict):
+                    aggregate_metrics = _namespaced_aggregate_metrics(
+                        aggregate_payload=aggregate_payload,
+                        pipeline_kind=pipeline_kind,
+                    )
+                    for metric_key, metric_value in sorted(aggregate_metrics.items()):
+                        if metric_key:
+                            mlflow.log_metric(metric_key, metric_value)
 
-        _log_epoch_history_if_present(experiment_root)
+            _log_epoch_history_if_present(experiment_root)
 
-        _log_default_artifacts(
-            experiment_root=experiment_root,
-            artifact_integrity=artifact_integrity,
-            pipeline_kind=pipeline_kind,
-            include_model_weights=include_weights_flag,
+            _log_default_artifacts(
+                experiment_root=experiment_root,
+                artifact_integrity=artifact_integrity,
+                pipeline_kind=pipeline_kind,
+                include_model_weights=include_weights_flag,
+            )
+        except Exception as exc:  # noqa: BLE001
+            mlflow.set_tags(
+                {
+                    _IMPORT_STATUS_TAG: _IMPORT_STATUS_FAILED,
+                    "chesslens_import_failed_at_utc": _utc_now_iso(),
+                    "chesslens_import_error": str(exc),
+                }
+            )
+            raise
+
+        mlflow.set_tags(
+            {
+                _IMPORT_STATUS_TAG: _IMPORT_STATUS_COMPLETE,
+                "chesslens_import_completed_at_utc": _utc_now_iso(),
+                "chesslens_import_source_identity_sha256": identity_hash,
+            }
         )
 
         return MlflowImportResult(

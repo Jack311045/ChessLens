@@ -7,7 +7,13 @@ import pytest
 from chesslens.modeling.optuna_study_config import load_neural_hpo_config
 
 
-def _write_hpo_config(path: Path, *, threads: int = 1) -> None:
+def _write_hpo_config(
+    path: Path,
+    *,
+    threads: int = 1,
+    trial_concurrency: int = 1,
+    objective_metric: str = "validation.policy.mrr",
+) -> None:
     path.write_text(
         "\n".join(
             [
@@ -17,7 +23,7 @@ def _write_hpo_config(path: Path, *, threads: int = 1) -> None:
                 "  name: fixture_hpo",
                 "  output_root: data/neural_hpo",
                 "  evaluation_scope: validation_only",
-                "  objective_metric: validation.policy.mrr",
+                f"  objective_metric: {objective_metric}",
                 "budget:",
                 "  max_total_trials: 8",
                 "  max_new_trials_per_invocation: 2",
@@ -43,6 +49,8 @@ def _write_hpo_config(path: Path, *, threads: int = 1) -> None:
                 "  warmup_epochs: 1",
                 "behavior:",
                 "  strict: true",
+                "execution:",
+                f"  trial_concurrency: {trial_concurrency}",
             ]
         )
         + "\n",
@@ -60,11 +68,29 @@ def test_load_neural_hpo_config_success(tmp_path: Path) -> None:
     assert config.study.evaluation_scope == "validation_only"
     assert config.budget.max_total_trials == 8
     assert config.runtime.threads == 1
+    assert config.execution.trial_concurrency == 1
 
 
-def test_load_neural_hpo_config_rejects_non_single_thread_runtime(tmp_path: Path) -> None:
+def test_load_neural_hpo_config_allows_runtime_threads_above_one(tmp_path: Path) -> None:
     config_path = tmp_path / "hpo.yaml"
-    _write_hpo_config(config_path, threads=2)
+    _write_hpo_config(config_path, threads=8)
 
-    with pytest.raises(ValueError, match="runtime.threads must be 1"):
+    config = load_neural_hpo_config(config_path)
+
+    assert config.runtime.threads == 8
+
+
+def test_load_neural_hpo_config_rejects_parallel_trial_concurrency(tmp_path: Path) -> None:
+    config_path = tmp_path / "hpo.yaml"
+    _write_hpo_config(config_path, trial_concurrency=2)
+
+    with pytest.raises(ValueError, match="execution.trial_concurrency must be 1"):
+        load_neural_hpo_config(config_path)
+
+
+def test_load_neural_hpo_config_rejects_unsupported_objective_metric(tmp_path: Path) -> None:
+    config_path = tmp_path / "hpo.yaml"
+    _write_hpo_config(config_path, objective_metric="validation.value.accuracy")
+
+    with pytest.raises(ValueError, match="study.objective_metric must be 'validation.policy.mrr'"):
         load_neural_hpo_config(config_path)

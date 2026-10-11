@@ -4,6 +4,7 @@ from pathlib import Path
 
 import mlflow
 import pytest
+from mlflow.tracking import MlflowClient
 
 from chesslens.modeling.mlflow_tracking import import_manifest_to_mlflow
 from chesslens.modeling.mlflow_tracking_config import load_mlflow_tracking_config
@@ -44,6 +45,55 @@ def _count_runs(*, tracking_config_path: Path, pipeline_kind: str, experiment_id
         output_format="list",
     )
     return len(runs)
+
+
+def _metric_history_len(
+    *,
+    tracking_config_path: Path,
+    run_id: str,
+    metric_key: str,
+) -> int:
+    config = load_mlflow_tracking_config(tracking_config_path)
+    mlflow.set_tracking_uri(config.tracking_uri)
+    client = MlflowClient(tracking_uri=config.tracking_uri)
+    return len(client.get_metric_history(run_id, metric_key))
+
+
+def _seed_partial_import_run(
+    *,
+    tracking_config_path: Path,
+    pipeline_kind: str,
+    experiment_id: str,
+    import_status: str,
+) -> str:
+    config = load_mlflow_tracking_config(tracking_config_path)
+    mlflow.set_tracking_uri(config.tracking_uri)
+
+    experiment = mlflow.get_experiment_by_name(config.experiment_name)
+    mlflow_experiment_id = (
+        str(experiment.experiment_id)
+        if experiment is not None
+        else str(
+            mlflow.create_experiment(
+                name=config.experiment_name,
+                artifact_location=config.artifact_root.as_posix(),
+            )
+        )
+    )
+
+    with mlflow.start_run(
+        experiment_id=mlflow_experiment_id,
+        run_name=f"partial-{pipeline_kind}-{experiment_id[:8]}",
+    ) as run:
+        mlflow.set_tags(
+            {
+                "chesslens_pipeline_kind": pipeline_kind,
+                "chesslens_experiment_id": experiment_id,
+                "chesslens_import_status": import_status,
+                "chesslens_run_origin": "historical_import",
+            }
+        )
+        return str(run.info.run_id)
 
 
 def test_mlflow_import_baseline_idempotent(tmp_path: Path) -> None:
@@ -137,16 +187,27 @@ def test_mlflow_import_neural_idempotent(tmp_path: Path) -> None:
         tracking_config_path=tracking_config_path,
         mode="historical",
     )
+    first_history_len = _metric_history_len(
+        tracking_config_path=tracking_config_path,
+        run_id=first.mlflow_run_id,
+        metric_key="validation.policy.best_mrr",
+    )
     second = import_manifest_to_mlflow(
         manifest_path=neural_result.manifest_path,
         pipeline_kind="neural",
         tracking_config_path=tracking_config_path,
         mode="historical",
     )
+    second_history_len = _metric_history_len(
+        tracking_config_path=tracking_config_path,
+        run_id=second.mlflow_run_id,
+        metric_key="validation.policy.best_mrr",
+    )
 
     assert first.reused_existing is False
     assert second.reused_existing is True
     assert first.mlflow_run_id == second.mlflow_run_id
+    assert first_history_len == second_history_len
     assert (
         _count_runs(
             tracking_config_path=tracking_config_path,
@@ -155,3 +216,35 @@ def test_mlflow_import_neural_idempotent(tmp_path: Path) -> None:
         )
         == 1
     )
+
+
+def test_mlflow_import_rejects_partial_existing_run(tmp_path: Path) -> None:
+    modeling_manifest = _write_modeling_fixture(tmp_path)
+    baseline_output_root = tmp_path / "baseline_output"
+    baseline_config_path = tmp_path / "baseline.yaml"
+    _write_baseline_config(
+        baseline_config_path,
+        manifest_path=modeling_manifest,
+        output_root=baseline_output_root,
+    )
+
+    baseline_result = run_baselines(config_path=baseline_config_path)
+
+    tracking_config_path = tmp_path / "tracking.yaml"
+    _write_tracking_config(tracking_config_path)
+
+    seeded_run_id = _seed_partial_import_run(
+        tracking_config_path=tracking_config_path,
+        pipeline_kind="baseline",
+        experiment_id=baseline_result.experiment_id,
+        import_status="in_progress",
+    )
+    assert seeded_run_id
+
+    with pytest.raises(RuntimeError, match="incomplete/failed"):
+        import_manifest_to_mlflow(
+            manifest_path=baseline_result.manifest_path,
+            pipeline_kind="baseline",
+            tracking_config_path=tracking_config_path,
+            mode="historical",
+        )

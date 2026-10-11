@@ -36,3 +36,6 @@ pruning:
 
 behavior:
   strict: true
+
+execution:
+  trial_concurrency: 1

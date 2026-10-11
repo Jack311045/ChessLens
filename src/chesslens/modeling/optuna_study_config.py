@@ -67,6 +67,11 @@ class HpoBehaviorConfig:
 
 
 @dataclass(frozen=True)
+class HpoExecutionConfig:
+    trial_concurrency: int
+
+
+@dataclass(frozen=True)
 class NeuralHpoConfig:
     reference: HpoReferenceConfig
     study: HpoStudyConfig
@@ -75,6 +80,7 @@ class NeuralHpoConfig:
     runtime: HpoRuntimeConfig
     pruning: HpoPruningConfig
     behavior: HpoBehaviorConfig
+    execution: HpoExecutionConfig
 
 
 def _load_yaml_dict(path: Path) -> dict[str, Any]:
@@ -190,6 +196,7 @@ def load_neural_hpo_config(path: Path) -> NeuralHpoConfig:
     raw_runtime = _as_mapping(raw.get("runtime"), field_name="runtime")
     raw_pruning = _as_mapping(raw.get("pruning"), field_name="pruning")
     raw_behavior = _as_mapping(raw.get("behavior"), field_name="behavior")
+    raw_execution = _as_mapping(raw.get("execution"), field_name="execution")
 
     study_name = _as_non_empty_string(
         raw_study.get("name", "phase32_hpo"),
@@ -310,6 +317,12 @@ def load_neural_hpo_config(path: Path) -> NeuralHpoConfig:
         behavior=HpoBehaviorConfig(
             strict=_as_bool(raw_behavior.get("strict", True), field_name="behavior.strict")
         ),
+        execution=HpoExecutionConfig(
+            trial_concurrency=_as_positive_int(
+                raw_execution.get("trial_concurrency", 1),
+                field_name="execution.trial_concurrency",
+            )
+        ),
     )
 
     if config.study.evaluation_scope != "validation_only":
@@ -317,9 +330,14 @@ def load_neural_hpo_config(path: Path) -> NeuralHpoConfig:
             "study.evaluation_scope must be 'validation_only' for Phase 3.2 HPO safety"
         )
 
-    if config.runtime.threads != 1:
+    if config.study.objective_metric != "validation.policy.mrr":
         raise ValueError(
-            "runtime.threads must be 1 for deterministic, single-writer HPO trials"
+            "study.objective_metric must be 'validation.policy.mrr' for current implementation"
+        )
+
+    if config.execution.trial_concurrency != 1:
+        raise ValueError(
+            "execution.trial_concurrency must be 1; parallel trial execution is not supported"
         )
 
     return config
@@ -358,6 +376,9 @@ def hpo_config_identity_payload(
             "seed": config.runtime.seed,
             "threads": config.runtime.threads,
             "device": config.runtime.device,
+        },
+        "execution": {
+            "trial_concurrency": config.execution.trial_concurrency,
         },
         "pruning": {
             "startup_trials": config.pruning.startup_trials,
