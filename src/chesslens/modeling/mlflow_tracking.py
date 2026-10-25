@@ -226,7 +226,7 @@ def _history_epoch_metrics(history_row: dict[str, Any]) -> dict[str, float]:
         "validation_total_loss": "validation.total_loss",
         "validation_policy_loss": "validation.policy_loss",
         "validation_value_loss": "validation.value_loss",
-        "validation_policy_mrr": "validation.policy.mrr",
+        "validation_policy_mrr": "epoch.validation.policy.mrr",
         "duration_seconds": "epoch.duration_seconds",
     }
 

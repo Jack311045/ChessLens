@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import mlflow
@@ -178,8 +179,45 @@ def test_mlflow_import_neural_idempotent(tmp_path: Path) -> None:
     neural_result = run_neural(config_path=neural_config_path)
     assert neural_result.completed is True
 
+    experiment_root = neural_result.manifest_path.parent
+    history = json.loads(
+        (experiment_root / "training_history.json").read_text(encoding="utf-8")
+    )
+    aggregate = json.loads(
+        (experiment_root / "aggregate_metrics.json").read_text(encoding="utf-8")
+    )
+    assert history
+
+    expected_steps = [int(row["epoch"]) for row in history]
+    expected_values = [float(row["validation_policy_mrr"]) for row in history]
+    expected_summaries = {
+        "validation.policy.mrr": float(aggregate["policy"]["validation"]["mrr"]),
+        "validation.policy.best_mrr": float(
+            aggregate["policy"]["best_validation_policy_mrr"]
+        ),
+    }
+
     tracking_config_path = tmp_path / "tracking.yaml"
     _write_tracking_config(tracking_config_path)
+    tracking_config = load_mlflow_tracking_config(tracking_config_path)
+    client = MlflowClient(tracking_uri=tracking_config.tracking_uri)
+
+    def assert_metric_histories(run_id: str) -> None:
+        epoch_records = sorted(
+            client.get_metric_history(run_id, "epoch.validation.policy.mrr"),
+            key=lambda record: record.step,
+        )
+        assert len(epoch_records) == len(history)
+        assert [record.step for record in epoch_records] == expected_steps
+        assert [record.value for record in epoch_records] == pytest.approx(
+            expected_values
+        )
+
+        for metric_key, expected_value in expected_summaries.items():
+            summary_records = client.get_metric_history(run_id, metric_key)
+            assert len(summary_records) == 1
+            assert summary_records[0].step == 0
+            assert summary_records[0].value == pytest.approx(expected_value)
 
     first = import_manifest_to_mlflow(
         manifest_path=neural_result.manifest_path,
@@ -187,27 +225,19 @@ def test_mlflow_import_neural_idempotent(tmp_path: Path) -> None:
         tracking_config_path=tracking_config_path,
         mode="historical",
     )
-    first_history_len = _metric_history_len(
-        tracking_config_path=tracking_config_path,
-        run_id=first.mlflow_run_id,
-        metric_key="validation.policy.best_mrr",
-    )
+    assert_metric_histories(first.mlflow_run_id)
+
     second = import_manifest_to_mlflow(
         manifest_path=neural_result.manifest_path,
         pipeline_kind="neural",
         tracking_config_path=tracking_config_path,
         mode="historical",
     )
-    second_history_len = _metric_history_len(
-        tracking_config_path=tracking_config_path,
-        run_id=second.mlflow_run_id,
-        metric_key="validation.policy.best_mrr",
-    )
+    assert_metric_histories(second.mlflow_run_id)
 
     assert first.reused_existing is False
     assert second.reused_existing is True
     assert first.mlflow_run_id == second.mlflow_run_id
-    assert first_history_len == second_history_len
     assert (
         _count_runs(
             tracking_config_path=tracking_config_path,
