@@ -1,0 +1,41 @@
+reference:
+  neural_config_path: C:/ChessLensWork/phase31_neural/data_scaling_100k/neural_config.json
+  modeling_manifest_path_override: C:/ChessLensWork/phase21_utcdate_acceptance/modeling/datasets/8631050546b8eda75d3fd9654b751bb91e823b74b3deb338d78bd027ee342b96/_manifest.json
+  baseline_reference_manifest_path_override: C:/ChessLensWork/phase31_neural/data_scaling_100k/baselines/experiments/16abf3d943d0745f6e4f46563b49ccdc5406c5c340b91eadbb043e687eadf44a/_manifest.json
+
+study:
+  name: real_100k_validation_hpo
+  output_root: C:/ChessLensWork/phase32_experiments
+  storage_path: C:/ChessLensWork/phase32_experiments/studies/real_100k_validation_hpo/optuna_study.db
+  evaluation_scope: validation_only
+  objective_metric: validation.policy.mrr
+
+budget:
+  max_total_trials: 4
+  max_new_trials_per_invocation: 1
+
+search_space:
+  learning_rate:
+    low: 0.0001
+    high: 0.002
+    log: true
+  weight_decay:
+    low: 0.00001
+    high: 0.01
+    log: true
+  value_weight_choices: [0.2, 0.4, 0.8]
+
+runtime:
+  seed: 20240131
+  threads: 8
+  device: cpu
+
+pruning:
+  startup_trials: 3
+  warmup_epochs: 2
+
+behavior:
+  strict: true
+
+execution:
+  trial_concurrency: 1

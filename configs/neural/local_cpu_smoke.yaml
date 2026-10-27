@@ -1,0 +1,61 @@
+input:
+  modeling_manifest_path: data/modeling/datasets/REPLACE_WITH_MODELING_DATASET_ID/_manifest.json
+  baseline_reference_manifest_path: null
+
+versions:
+  neural_pipeline_version: neural_supervised_v1
+  feature_schema_version: policy_value_features_v1
+  split_definition_version: temporal_game_split_v1
+  board_encoding_version: board18_abs_v1
+  action_encoding_version: action8x8x73_v1
+  position_normalization_version: fen4_legal_ep_v1
+
+runtime:
+  seed: 20240131
+  threads: 8
+  device: cpu
+
+selection:
+  max_train_positions: 30000
+  max_validation_positions: 5000
+  max_test_positions: 5000
+  training_population_mode: temporal_all
+
+model:
+  trunk_channels: 128
+  residual_blocks: 6
+  context_embedding_dim: 32
+  context_hidden_dim: 96
+  value_hidden_dim: 192
+
+optimization:
+  optimizer: adamw
+  learning_rate: 0.0007
+  weight_decay: 0.0001
+  batch_size: 192
+  grad_clip_norm: 1.0
+
+training:
+  max_epochs: 12
+  early_stopping_patience: 4
+  selection_metric: validation_policy_mrr
+
+loss:
+  policy_weight: 1.0
+  value_weight: 0.4
+
+evaluation:
+  ranking_cutoffs:
+    - 1
+    - 3
+    - 5
+  ece_bins: 15
+
+output:
+  output_root: data/neural
+  checkpoint_every_epochs: 1
+  keep_top_k_checkpoints: 3
+  progress_update_seconds: 60
+
+behavior:
+  strict: true
