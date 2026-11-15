@@ -15,6 +15,8 @@ This repository currently implements:
 - Phase 2.2 classical baselines: frequency policy ranking, multinomial logistic value baseline, and LightGBM ranking with leakage-audited staged publication.
 - Phase 3.1 neural training foundation: supervised policy/value residual CNN training with deterministic selection fingerprints, resume-safe checkpoints, artifact integrity checks, and staged publication.
 - Phase 3.2 local experiment MLOps: MLflow historical-import tracking and bounded, validation-only Optuna HPO with resume-safe study state and single-writer locking.
+- Frozen-checkpoint evaluation: reproducible, game-disjoint validation WDL temperature pilots with
+  before/after metrics, integrity-checked model/preprocessor lineage, and ONNX handoff sources.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 Phase 1 ETL and warehouse acceptance are complete, including 10M+ real-game processing and deterministic Tier-2 dbt validation.
@@ -49,13 +51,16 @@ Completed:
 Not yet completed:
 
 - large-scale neural tuning and calibration studies;
-- calibration, ablations, and error analysis;
+- independent calibration acceptance, ablations, and error analysis (validation pilots are exploratory);
 - long-running real-data MLflow/Optuna study execution and tuning analysis;
 - ONNX export and FastAPI serving;
 - Docker production image;
 - AWS deployment, monitoring, and drift reporting.
 
 ## Architecture Overview
+
+Checkpoint evaluation commands and verified local results:
+[Phase 3 checkpoint evaluation walkthrough](docs/learning/phase3_3_checkpoint_evaluation_walkthrough.md).
 
 Current flow in this phase:
 
