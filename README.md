@@ -17,6 +17,8 @@ This repository currently implements:
 - Phase 3.2 local experiment MLOps: MLflow historical-import tracking and bounded, validation-only Optuna HPO with resume-safe study state and single-writer locking.
 - Frozen-checkpoint evaluation: reproducible, game-disjoint validation WDL temperature pilots with
   before/after metrics, integrity-checked model/preprocessor lineage, and ONNX handoff sources.
+- CPU FP32 ONNX export: dynamic-batch policy/WDL logits, PyTorch/ORT numerical and legal-ranking
+  parity, portable inference contracts, and forward-only CPU benchmarks.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 Phase 1 ETL and warehouse acceptance are complete, including 10M+ real-game processing and deterministic Tier-2 dbt validation.
@@ -53,7 +55,7 @@ Not yet completed:
 - large-scale neural tuning and calibration studies;
 - independent calibration acceptance, ablations, and error analysis (validation pilots are exploratory);
 - long-running real-data MLflow/Optuna study execution and tuning analysis;
-- ONNX export and FastAPI serving;
+- FastAPI serving (CPU FP32 ONNX export/parity is implemented);
 - Docker production image;
 - AWS deployment, monitoring, and drift reporting.
 
@@ -61,6 +63,8 @@ Not yet completed:
 
 Checkpoint evaluation commands and verified local results:
 [Phase 3 checkpoint evaluation walkthrough](docs/learning/phase3_3_checkpoint_evaluation_walkthrough.md).
+CPU FP32 export, parity, benchmark and FastAPI handoff:
+[ONNX export walkthrough](docs/learning/phase4_1_onnx_export_walkthrough.md).
 
 Current flow in this phase:
 

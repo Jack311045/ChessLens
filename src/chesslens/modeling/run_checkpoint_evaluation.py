@@ -18,26 +18,28 @@ import torch
 
 from chesslens.features import action_encoding, position_encoding
 from chesslens.modeling.calibration import fit_temperature, temperature_scale
-from chesslens.modeling.neural_config import (
-    NeuralConfig,
-    load_neural_config,
-    neural_config_identity_payload,
+from chesslens.modeling.neural_checkpoint import (
+    _require_equal,
+    load_frozen_model,
+    validate_checkpoint_config,
 )
+from chesslens.modeling.neural_checkpoint import (
+    _validate_neural_manifest as _validate_neural_manifest,
+)
+from chesslens.modeling.neural_config import NeuralConfig
 from chesslens.modeling.neural_data import (
-    CONTINUOUS_CONTEXT_FIELDS,
     WDL_CLASS_ORDER,
     NeuralPreprocessor,
     encode_examples,
     selected_key_hash,
     value_target_to_index,
 )
-from chesslens.modeling.neural_network import NeuralModelSizes, PolicyValueResidualCNN
+from chesslens.modeling.neural_network import PolicyValueResidualCNN
 from chesslens.modeling.neural_training import (
     _batch_tensors,
     _file_sha256,
     _neural_preflight,
     _SingleWriterLock,
-    _validate_existing_experiment,
 )
 from chesslens.modeling.run_baselines import (
     PositionExample,
@@ -61,40 +63,12 @@ FORMAL_PROTOCOL = (
 )
 
 
-def _require_equal(actual: Any, expected: Any, field: str) -> None:
-    if actual != expected:
-        raise RuntimeError(f"{field} mismatch: expected={expected!r}, actual={actual!r}")
-
-
 def _source(path: Path) -> dict[str, Any]:
     return {
         "path": str(path.resolve()),
         "sha256": _file_sha256(path),
         "size_bytes": path.stat().st_size,
     }
-
-
-def _validate_neural_manifest(path: Path) -> dict[str, Any]:
-    manifest = read_json_object(path)
-    identity = manifest["identity_payload"]
-    identity_hash = sha256_text(canonical_json(identity))
-    _require_equal(manifest["experiment_id"], identity_hash, "experiment identity")
-    _require_equal(
-        manifest["selection_fingerprints"],
-        identity["selection_fingerprints"],
-        "manifest selection fingerprints",
-    )
-    _validate_existing_experiment(
-        experiment_path=path.parent,
-        expected_experiment_id=identity_hash,
-        expected_identity_hash=identity_hash,
-    )
-    _require_equal(
-        read_json_object(path.parent / "experiment_identity_payload.json"),
-        identity,
-        "identity artifact",
-    )
-    return manifest
 
 
 def _verify_selection(
@@ -417,26 +391,10 @@ def run_checkpoint_evaluation(
         raise ValueError("max_positions, batch_size, threads must be positive; seed non-negative")
     if not selection_rationale.strip():
         raise ValueError("A pre-test checkpoint selection rationale is required")
-    manifest = _validate_neural_manifest(neural_manifest)
+    manifest, config = validate_checkpoint_config(neural_manifest)
     evidence = _selection_evidence(selection_evidence, manifest["experiment_id"])
     root = neural_manifest.parent
-    config = load_neural_config(root / "effective_config.json")
     identity = manifest["identity_payload"]
-    effective = neural_config_identity_payload(config)
-    effective["input"].clear()
-    saved_effective = json.loads(canonical_json(identity["effective_config"]))
-    saved_effective["input"].clear()
-    _require_equal(effective, saved_effective, "effective config")
-    version_config = asdict(config.versions)
-    for name in (
-        "neural_pipeline_version",
-        "feature_schema_version",
-        "split_definition_version",
-        "board_encoding_version",
-        "action_encoding_version",
-        "position_normalization_version",
-    ):
-        _require_equal(manifest["versions"].get(name), version_config[name], f"version {name}")
     path = modeling_manifest or config.input.modeling_manifest_path
     config = replace(config, input=replace(config.input, modeling_manifest_path=path))
     preflight = _neural_preflight(config)
@@ -471,20 +429,7 @@ def run_checkpoint_evaluation(
     if min(len(fit), len(check)) < 2:
         raise RuntimeError("Validation pilot needs at least two positions in each fit/check group")
 
-    preprocessor = NeuralPreprocessor.from_dict(
-        read_json_object(root / "feature_preprocessing.json")
-    )
-    model = PolicyValueResidualCNN(
-        **asdict(config.model),
-        sizes=NeuralModelSizes(
-            continuous_features=2 * len(CONTINUOUS_CONTEXT_FIELDS),
-            rating_band_vocab_size=len(preprocessor.rating_band_to_index),
-            time_control_vocab_size=len(preprocessor.time_control_to_index),
-        ),
-    )
-    state = torch.load(root / "model_state_best.pt", map_location="cpu", weights_only=True)
-    model.load_state_dict(state, strict=True)
-    model.requires_grad_(False)
+    preprocessor, model = load_frozen_model(root, config)
     previous_threads = torch.get_num_threads()
     try:
         torch.set_num_threads(threads)
@@ -558,6 +503,7 @@ def run_checkpoint_evaluation(
                 name: _source(Path(__file__).with_name(name))
                 for name in (
                     "run_checkpoint_evaluation.py",
+                    "neural_checkpoint.py",
                     "calibration.py",
                     "neural_data.py",
                     "neural_network.py",
