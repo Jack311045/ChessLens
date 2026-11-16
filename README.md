@@ -19,6 +19,8 @@ This repository currently implements:
   before/after metrics, integrity-checked model/preprocessor lineage, and ONNX handoff sources.
 - CPU FP32 ONNX export: dynamic-batch policy/WDL logits, PyTorch/ORT numerical and legal-ranking
   parity, portable inference contracts, and forward-only CPU benchmarks.
+- Local FastAPI single-position serving: validated FEN/context, legal-move probabilities,
+  mover-relative WDL and versioned, integrity-checked CPU ONNX inference.
 - A bounded-memory streaming PGN reader and sample profiler to validate assumptions against real Lichess data.
 
 Phase 1 ETL and warehouse acceptance are complete, including 10M+ real-game processing and deterministic Tier-2 dbt validation.
@@ -55,7 +57,7 @@ Not yet completed:
 - large-scale neural tuning and calibration studies;
 - independent calibration acceptance, ablations, and error analysis (validation pilots are exploratory);
 - long-running real-data MLflow/Optuna study execution and tuning analysis;
-- FastAPI serving (CPU FP32 ONNX export/parity is implemented);
+- full-game API analysis and blunder-risk serving (single-position FastAPI inference is implemented);
 - Docker production image;
 - AWS deployment, monitoring, and drift reporting.
 
@@ -65,6 +67,8 @@ Checkpoint evaluation commands and verified local results:
 [Phase 3 checkpoint evaluation walkthrough](docs/learning/phase3_3_checkpoint_evaluation_walkthrough.md).
 CPU FP32 export, parity, benchmark and FastAPI handoff:
 [ONNX export walkthrough](docs/learning/phase4_1_onnx_export_walkthrough.md).
+Local API setup, PowerShell startup/calls, contracts and acceptance evidence:
+[FastAPI single-position walkthrough](docs/learning/phase4_2_fastapi_walkthrough.md).
 
 Current flow in this phase:
 
@@ -774,15 +778,17 @@ Lichess database exports are published under CC0. Verify current terms at the of
 
 ## Limitations
 
-- Phase 1 ETL/warehouse and Phase 2.1 dataset foundations are complete, but model
-	training and deployment work are still pending.
-- No training metrics, serving latency, or cloud deployment metrics are claimed yet.
+- CPU FP32 export/parity and local single-position serving are validated; full-game
+  analysis, blunder-risk serving and production deployment remain pending.
+- Local latency measurements are hardware/request-specific, not production SLAs.
+  No cloud deployment metrics are claimed.
 
 ## Roadmap (Next Phases)
 
 1. Phase 2: baseline models on top of the completed leakage-aware modeling datasets.
 2. Phase 3: multi-task PyTorch training, ablations, calibration, and error analysis.
-3. Phase 4: model export, serving API, Docker packaging, and CI/CD hardening.
+3. Phase 4: CPU FP32 export/parity and single-position API complete; Docker packaging,
+   full-game analysis and CI/CD hardening remain.
 4. Phase 5: cloud deployment, monitoring, and drift reporting.
 
 ## Core References

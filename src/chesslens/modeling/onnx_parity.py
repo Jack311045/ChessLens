@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import chess
 import numpy as np
@@ -15,6 +16,9 @@ from chesslens.features.action_encoding import (
 )
 from chesslens.features.position_encoding import BOARD_SHAPE
 from chesslens.modeling.neural_data import CONTINUOUS_CONTEXT_FIELDS, NeuralPreprocessor
+
+if TYPE_CHECKING:
+    import onnxruntime as ort
 
 RTOL = 1e-4
 ATOL = 1e-5
@@ -51,6 +55,24 @@ def validate_session(session: Any) -> None:
             expected_type = "tensor(float)" if dtype == "float32" else "tensor(int64)"
             if node.type != expected_type or node.shape != ["batch", *shape]:
                 raise ValueError(f"ONNX session dtype/shape mismatch for {node.name}: {node}")
+
+
+def create_cpu_session(path: Path, threads: int) -> ort.InferenceSession:
+    import onnxruntime as ort
+
+    if threads < 1:
+        raise ValueError("Inference threads must be positive")
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = threads
+    options.inter_op_num_threads = 1
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    session = ort.InferenceSession(
+        str(path), sess_options=options, providers=["CPUExecutionProvider"]
+    )
+    session.disable_fallback()
+    validate_session(session)
+    return session
 
 
 def validate_inputs(inputs: dict[str, np.ndarray], preprocessor: NeuralPreprocessor) -> None:
@@ -118,6 +140,10 @@ def compare_arrays(reference: np.ndarray, actual: np.ndarray) -> dict[str, Any]:
 
 
 def rank_legal(logits: np.ndarray, mask: np.ndarray, fen: str) -> list[int]:
+    return rank_legal_actions(logits, mask, fen)[:5]
+
+
+def rank_legal_actions(logits: np.ndarray, mask: np.ndarray, fen: str) -> list[int]:
     board = chess.Board(fen)
     if mask.dtype != np.bool_ or mask.shape != (ACTION_SPACE_SIZE,):
         raise ValueError("Legal mask dtype/shape mismatch")
@@ -130,7 +156,7 @@ def rank_legal(logits: np.ndarray, mask: np.ndarray, fen: str) -> list[int]:
         move = decode_index_to_move(idx, board, require_legal=True)
         if encode_move_to_index(move, board) != idx:
             raise ValueError("Action encoder/decoder round-trip mismatch")
-    return ranked[:5]
+    return ranked
 
 
 def _gap(

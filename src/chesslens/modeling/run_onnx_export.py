@@ -45,10 +45,10 @@ from chesslens.modeling.onnx_parity import (
     RTOL,
     compare_arrays,
     compare_behavior,
+    create_cpu_session,
     io_contract,
     softmax_wdl,
     validate_inputs,
-    validate_session,
 )
 from chesslens.modeling.run_baselines import (
     PositionExample,
@@ -78,19 +78,7 @@ def _integrity(path: Path) -> dict[str, Any]:
 
 
 def _session(path: Path, threads: int) -> ort.InferenceSession:
-    options = ort.SessionOptions()
-    options.intra_op_num_threads = threads
-    options.inter_op_num_threads = 1
-    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    session = ort.InferenceSession(
-        str(path),
-        sess_options=options,
-        providers=["CPUExecutionProvider"],
-    )
-    session.disable_fallback()
-    validate_session(session)
-    return session
+    return create_cpu_session(path, threads)
 
 
 def load_bundle(

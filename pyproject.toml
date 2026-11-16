@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+api = [
+  "fastapi>=0.115.0",
+  "pydantic>=2.9.0",
+  "uvicorn>=0.30.0",
+]
 onnx = [
   "onnx>=1.17.0",
   "onnxruntime>=1.20.0",
@@ -37,6 +42,7 @@ packages = ["src/chesslens"]
 
 [dependency-groups]
 dev = [
+  "httpx>=0.27.0",
   "pytest>=8.3.3",
   "hypothesis>=6.115.2",
   "ruff>=0.7.2",
