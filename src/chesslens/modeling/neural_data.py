@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import chess
 import numpy as np
@@ -11,8 +11,10 @@ import numpy.typing as npt
 
 from chesslens.features.action_encoding import ACTION_SPACE_SIZE, legal_move_mask
 from chesslens.features.position_encoding import encode_fen_18x8x8
-from chesslens.modeling.run_baselines import PositionExample
 from chesslens.modeling.validation import canonical_json, sha256_text
+
+if TYPE_CHECKING:
+    from chesslens.modeling.run_baselines import PositionExample
 
 WDL_CLASS_ORDER: tuple[str, str, str] = ("win", "draw", "loss")
 CONTINUOUS_CONTEXT_FIELDS: tuple[str, ...] = (
@@ -205,15 +207,28 @@ def value_target_to_index(value_target_wdl: str) -> int:
     return mapping[value_target_wdl]
 
 
-def _continuous_context_vector(
-    example: PositionExample,
-    preprocessor: NeuralPreprocessor,
-) -> npt.NDArray[np.float32]:
-    values: list[float] = []
+@dataclass(frozen=True)
+class EncodedPosition:
+    board_tensor: npt.NDArray[np.float32]
+    legal_mask: npt.NDArray[np.bool_]
+    continuous_context: npt.NDArray[np.float32]
+    rating_band_index: int
+    time_control_index: int
 
+
+def encode_position(
+    fen: str,
+    *,
+    numeric_context: dict[str, float | None],
+    mover_rating_band: str | None,
+    time_control_category: str | None,
+    preprocessor: NeuralPreprocessor,
+) -> EncodedPosition:
+    """Encode inference features without requiring policy or value labels."""
+    values: list[float] = []
     for field_name in CONTINUOUS_CONTEXT_FIELDS:
         stat = preprocessor.continuous_stats[field_name]
-        raw_value = _extract_numeric_field(example, field_name)
+        raw_value = numeric_context[field_name]
         if raw_value is None:
             values.append(0.0)
             values.append(1.0)
@@ -221,7 +236,19 @@ def _continuous_context_vector(
             values.append((raw_value - stat.mean) / stat.std)
             values.append(0.0)
 
-    return np.asarray(values, dtype=np.float32)
+    return EncodedPosition(
+        board_tensor=encode_fen_18x8x8(fen, dtype=np.float32),
+        legal_mask=legal_move_mask(chess.Board(fen)),
+        continuous_context=np.asarray(values, dtype=np.float32),
+        rating_band_index=preprocessor.rating_band_to_index.get(
+            mover_rating_band or "unknown",
+            preprocessor.rating_band_to_index[UNKNOWN_CATEGORY_TOKEN],
+        ),
+        time_control_index=preprocessor.time_control_to_index.get(
+            time_control_category or "unknown",
+            preprocessor.time_control_to_index[UNKNOWN_CATEGORY_TOKEN],
+        ),
+    )
 
 
 def encode_examples(
@@ -233,9 +260,16 @@ def encode_examples(
     encoded: list[EncodedExample] = []
 
     for example in examples:
-        board_tensor = encode_fen_18x8x8(example.pre_move_fen, dtype=np.float32)
-        board = chess.Board(example.pre_move_fen)
-        legal_mask = legal_move_mask(board)
+        features = encode_position(
+            example.pre_move_fen,
+            numeric_context={
+                name: _extract_numeric_field(example, name) for name in CONTINUOUS_CONTEXT_FIELDS
+            },
+            mover_rating_band=example.mover_rating_band,
+            time_control_category=example.time_control_category,
+            preprocessor=preprocessor,
+        )
+        legal_mask = features.legal_mask
 
         if legal_mask.shape != (ACTION_SPACE_SIZE,):
             raise RuntimeError("legal_move_mask returned unexpected shape")
@@ -270,19 +304,13 @@ def encode_examples(
                 game_id=example.game_id,
                 ply=example.ply,
                 position_id=example.position_id,
-                board_tensor=board_tensor,
+                board_tensor=features.board_tensor,
                 legal_mask=legal_mask,
                 policy_target_action_index=policy_target,
                 value_target_index=value_target_to_index(example.value_target_wdl),
-                continuous_context=_continuous_context_vector(example, preprocessor),
-                rating_band_index=preprocessor.rating_band_to_index.get(
-                    rating_token,
-                    preprocessor.rating_band_to_index[UNKNOWN_CATEGORY_TOKEN],
-                ),
-                time_control_index=preprocessor.time_control_to_index.get(
-                    time_control_token,
-                    preprocessor.time_control_to_index[UNKNOWN_CATEGORY_TOKEN],
-                ),
+                continuous_context=features.continuous_context,
+                rating_band_index=features.rating_band_index,
+                time_control_index=features.time_control_index,
                 metadata={
                     "split": split,
                     "game_id": example.game_id,
@@ -335,10 +363,7 @@ def compare_selection_fingerprints(
         if expected is None or actual_hash is None:
             return CompatibilityReport(
                 compatible=False,
-                reason=(
-                    "Missing split key hash for compatibility check: "
-                    f"{split_name}"
-                ),
+                reason=(f"Missing split key hash for compatibility check: {split_name}"),
             )
         if expected != actual_hash:
             return CompatibilityReport(

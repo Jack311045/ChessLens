@@ -22,6 +22,17 @@ dependencies = [
   "dbt-duckdb==1.10.0",
 ]
 
+[project.optional-dependencies]
+api = [
+  "fastapi>=0.115.0",
+  "pydantic>=2.9.0",
+  "uvicorn>=0.30.0",
+]
+onnx = [
+  "onnx>=1.17.0",
+  "onnxruntime>=1.20.0",
+]
+
 [build-system]
 requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
@@ -31,6 +42,7 @@ packages = ["src/chesslens"]
 
 [dependency-groups]
 dev = [
+  "httpx>=0.27.0",
   "pytest>=8.3.3",
   "hypothesis>=6.115.2",
   "ruff>=0.7.2",
@@ -82,5 +94,9 @@ module = [
   "optuna.*",
   "torch",
   "torch.*",
+  "onnx",
+  "onnx.*",
+  "onnxruntime",
+  "onnxruntime.*",
 ]
 ignore_missing_imports = true

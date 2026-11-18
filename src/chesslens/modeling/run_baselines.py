@@ -728,6 +728,22 @@ def _novel_position_ids(novel_paths: list[Path]) -> set[str]:
     return {str(row[0]) for row in rows if row[0] is not None}
 
 
+def _position_selection_query(
+    paths: list[Path], *, columns: str, limit: int | None, seed: int,
+) -> str:
+    base = "SELECT " + columns + " FROM read_parquet(" + _sql_file_list(paths) + ")"
+    if limit is not None and limit > 0:
+        seed_token = str(seed).replace("'", "''")
+        return (
+            base
+            + " ORDER BY hash(concat(game_id, ':', CAST(ply AS VARCHAR), ':', '"
+            + seed_token
+            + "')) LIMIT "
+            + str(limit)
+        )
+    return base
+
+
 def _load_position_examples(
     paths: list[Path],
     *,
@@ -736,20 +752,9 @@ def _load_position_examples(
     seed: int,
     novel_position_ids: set[str],
 ) -> list[PositionExample]:
-    cols = ", ".join(POLICY_REQUIRED_COLUMNS)
-    base = "SELECT " + cols + " FROM read_parquet(" + _sql_file_list(paths) + ")"
-
-    if limit is not None and limit > 0:
-        seed_token = str(seed).replace("'", "''")
-        query = (
-            base
-            + " ORDER BY hash(concat(game_id, ':', CAST(ply AS VARCHAR), ':', '"
-            + seed_token
-            + "')) LIMIT "
-            + str(limit)
-        )
-    else:
-        query = base
+    query = _position_selection_query(
+        paths, columns=", ".join(POLICY_REQUIRED_COLUMNS), limit=limit, seed=seed,
+    )
 
     connection = duckdb.connect()
     try:
